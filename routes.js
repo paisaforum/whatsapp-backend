@@ -438,6 +438,20 @@ router.post('/request-redemption', async (req, res) => {
 });
 
 
+// Get system settings (public - no auth required)
+router.get('/settings', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const settings = await pool.query(
+            'SELECT setting_key, setting_value FROM system_settings ORDER BY setting_key'
+        );
+        res.json({ settings: settings.rows });
+    } catch (error) {
+        console.error('Failed to fetch settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
 // Admin login
 router.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
