@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 
+
 // Storage for user submissions
 const submissionStorage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -60,7 +61,7 @@ const uploadOffer = multer({
     }
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+const JWT_SECRET = 'your-secret-key-change-this-in-production'; // In production, use environment variable
 
 // Helper function to hash phone numbers
 function hashPhoneNumber(phoneNumber) {
@@ -83,12 +84,12 @@ router.post('/register', async (req, res) => {
         const pool = req.app.get('db');
 
         // Check if user already exists
-        const [existingUser] = await pool.query(
-            'SELECT id FROM users WHERE whatsapp_number = ?',
+        const existingUser = await pool.query(
+            'SELECT id FROM users WHERE whatsapp_number = $1',
             [whatsappNumber]
         );
 
-        if (existingUser.length > 0) {
+        if (existingUser.rows.length > 0) {
             return res.status(400).json({ error: 'Account with this number already exists. Please login.' });
         }
 
@@ -96,18 +97,16 @@ router.post('/register', async (req, res) => {
         const passwordHash = await bcrypt.hash(password, 10);
 
         // Create new user
-        const [result] = await pool.query(
-            'INSERT INTO users (whatsapp_number, password_hash) VALUES (?, ?)',
+        const newUser = await pool.query(
+            'INSERT INTO users (whatsapp_number, password_hash) VALUES ($1, $2) RETURNING id',
             [whatsappNumber, passwordHash]
         );
 
-        const userId = result.insertId;
-
         // Create JWT token
-        const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ userId: newUser.rows[0].id }, JWT_SECRET, { expiresIn: '30d' });
 
         res.json({
-            userId: userId,
+            userId: newUser.rows[0].id,
             token: token,
             message: 'Account created successfully!'
         });
@@ -129,27 +128,27 @@ router.post('/login', async (req, res) => {
         const pool = req.app.get('db');
 
         // Find user
-        const [user] = await pool.query(
-            'SELECT id, password_hash FROM users WHERE whatsapp_number = ?',
+        const user = await pool.query(
+            'SELECT id, password_hash FROM users WHERE whatsapp_number = $1',
             [whatsappNumber]
         );
 
-        if (user.length === 0) {
+        if (user.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid WhatsApp number or password' });
         }
 
         // Check password
-        const validPassword = await bcrypt.compare(password, user[0].password_hash);
+        const validPassword = await bcrypt.compare(password, user.rows[0].password_hash);
 
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid WhatsApp number or password' });
         }
 
         // Create JWT token
-        const token = jwt.sign({ userId: user[0].id }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ userId: user.rows[0].id }, JWT_SECRET, { expiresIn: '30d' });
 
         res.json({
-            userId: user[0].id,
+            userId: user.rows[0].id,
             token: token,
             message: 'Login successful!'
         });
@@ -168,115 +167,116 @@ router.get('/dashboard/:userId', async (req, res) => {
         const pool = req.app.get('db');
 
         // Get user info
-        const [user] = await pool.query(
-            'SELECT id, whatsapp_number, created_at FROM users WHERE id = ?',
+        const user = await pool.query(
+            'SELECT id, whatsapp_number, created_at FROM users WHERE id = $1',
             [userId]
         );
 
-        if (user.length === 0) {
+        if (user.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
 
         // Get current offer
-        const [offer] = await pool.query(
-            'SELECT * FROM offers WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1'
+        const offer = await pool.query(
+            'SELECT * FROM offers WHERE is_active = true ORDER BY created_at DESC LIMIT 1'
         );
 
         // Calculate user points
-        const [pointsResult] = await pool.query(
-            `SELECT COALESCE(SUM(points_earned), 0) as total_points
-             FROM submissions 
-             WHERE user_id = ? AND status = 'active'`,
+        const pointsResult = await pool.query(
+            `SELECT 
+        COALESCE(SUM(points_awarded), 0) as total_points
+       FROM submissions 
+       WHERE user_id = $1 AND status = 'active'`,
             [userId]
         );
 
         // Get redeemed points
-        const [redeemedResult] = await pool.query(
-            `SELECT COALESCE(SUM(points_redeemed), 0) as redeemed_points
-             FROM redemptions 
-             WHERE user_id = ? AND status = 'approved'`,
+        const redeemedResult = await pool.query(
+            `SELECT COALESCE(SUM(points_requested), 0) as redeemed_points
+       FROM redemptions 
+       WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
-        const totalPoints = parseInt(pointsResult[0].total_points);
-        const redeemedPoints = parseInt(redeemedResult[0].redeemed_points);
+        const totalPoints = parseInt(pointsResult.rows[0].total_points);
+        const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
         const availablePoints = totalPoints - redeemedPoints;
 
         // Get total submission count
-        const [submissionCountResult] = await pool.query(
-            'SELECT COUNT(*) as total FROM submissions WHERE user_id = ?',
+        const submissionCountResult = await pool.query(
+            'SELECT COUNT(*) as total FROM submissions WHERE user_id = $1',
             [userId]
         );
-        const totalSubmissions = parseInt(submissionCountResult[0].total);
+        const totalSubmissions = parseInt(submissionCountResult.rows[0].total);
 
         // Get paginated submissions
         const submissionsOffset = (submissionsPage - 1) * limit;
-        const [submissions] = await pool.query(
+        const submissions = await pool.query(
             `SELECT * FROM submissions 
-             WHERE user_id = ? 
-             ORDER BY created_at DESC 
-             LIMIT ? OFFSET ?`,
-            [userId, parseInt(limit), submissionsOffset]
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT $2 OFFSET $3`,
+            [userId, limit, submissionsOffset]
         );
 
         // Get total redemption count
-        const [redemptionCountResult] = await pool.query(
-            'SELECT COUNT(*) as total FROM redemptions WHERE user_id = ?',
+        const redemptionCountResult = await pool.query(
+            'SELECT COUNT(*) as total FROM redemptions WHERE user_id = $1',
             [userId]
         );
-        const totalRedemptions = parseInt(redemptionCountResult[0].total);
+        const totalRedemptions = parseInt(redemptionCountResult.rows[0].total);
 
         // Get paginated redemptions
         const redemptionsOffset = (redemptionsPage - 1) * limit;
-        const [redemptions] = await pool.query(
+        const redemptions = await pool.query(
             `SELECT * FROM redemptions 
-             WHERE user_id = ? 
-             ORDER BY created_at DESC
-             LIMIT ? OFFSET ?`,
-            [userId, parseInt(limit), redemptionsOffset]
+       WHERE user_id = $1 
+       ORDER BY requested_at DESC
+       LIMIT $2 OFFSET $3`,
+            [userId, limit, redemptionsOffset]
         );
 
         // Get unread notifications
-        const [notifications] = await pool.query(
+        const notifications = await pool.query(
             `SELECT * FROM notifications 
-             WHERE user_id = ? AND is_read = 0 
-             ORDER BY created_at DESC`,
+       WHERE user_id = $1 AND is_read = false 
+       ORDER BY created_at DESC`,
             [userId]
         );
 
         // Get pending redemptions
-        const [pendingRedemption] = await pool.query(
+        const pendingRedemption = await pool.query(
             `SELECT * FROM redemptions 
-             WHERE user_id = ? AND status = 'pending'
-             ORDER BY created_at DESC
-             LIMIT 1`,
+       WHERE user_id = $1 AND status = 'pending'
+       ORDER BY requested_at DESC
+       LIMIT 1`,
             [userId]
         );
 
         res.json({
-            user: user[0],
-            offer: offer[0] || null,
+            user: user.rows[0],
+            offer: offer.rows[0] || null,
             points: {
                 total: totalPoints,
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
-            submissions: submissions,
+            submissions: submissions.rows,
             submissionsPagination: {
                 total: totalSubmissions,
                 page: parseInt(submissionsPage),
                 limit: parseInt(limit),
                 totalPages: Math.ceil(totalSubmissions / limit)
             },
-            redemptions: redemptions,
+            redemptions: redemptions.rows,
             redemptionsPagination: {
                 total: totalRedemptions,
                 page: parseInt(redemptionsPage),
                 limit: parseInt(limit),
                 totalPages: Math.ceil(totalRedemptions / limit)
             },
-            notifications: notifications,
-            pendingRedemption: pendingRedemption[0] || null
+            notifications: notifications.rows,
+            pendingRedemption: pendingRedemption.rows[0] || null
         });
     } catch (error) {
         console.error('Dashboard error:', error);
@@ -305,36 +305,36 @@ router.post('/submit-proof', uploadSubmission.array('screenshots', 20), async (r
         // Hash recipient numbers and check for duplicates
         const hashedNumbers = numbers.map(num => hashPhoneNumber(num));
 
-        const [duplicateCheck] = await pool.query(
-            `SELECT recipient_hash FROM user_recipients 
-             WHERE user_id = ? AND recipient_hash IN (${hashedNumbers.map(() => '?').join(',')})`,
-            [userId, ...hashedNumbers]
+        const duplicateCheck = await pool.query(
+            `SELECT recipient_number_hash FROM user_recipients 
+       WHERE user_id = $1 AND recipient_number_hash = ANY($2)`,
+            [userId, hashedNumbers]
         );
 
-        if (duplicateCheck.length > 0) {
+        if (duplicateCheck.rows.length > 0) {
             return res.status(400).json({
                 error: 'You have already submitted shares to some of these recipients'
             });
         }
 
-        // Store screenshot paths as JSON
+        // Store screenshot paths
         const screenshotPaths = screenshots.map(file => `/uploads/submissions/${file.filename}`);
-        const screenshotPathsJSON = JSON.stringify(screenshotPaths);
 
         // Create submission
-        const [result] = await pool.query(
-            `INSERT INTO submissions (user_id, screenshot_url, points_earned, status) 
-             VALUES (?, ?, ?, 'active')`,
-            [userId, screenshotPathsJSON, numbers.length]
+        const submission = await pool.query(
+            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
+       VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
+            [userId, screenshotPaths, numbers.length, numbers.length]
         );
 
-        const submissionId = result.insertId;
+        const submissionId = submission.rows[0].id;
 
         // Store recipient mappings
+        // Store recipient mappings with both hash and actual number
         for (let i = 0; i < hashedNumbers.length; i++) {
             await pool.query(
-                `INSERT INTO user_recipients (user_id, recipient_hash, recipient_number, submission_id) 
-                 VALUES (?, ?, ?, ?)`,
+                `INSERT INTO user_recipients (user_id, recipient_number_hash, recipient_number, submission_id) 
+     VALUES ($1, $2, $3, $4)`,
                 [userId, hashedNumbers[i], numbers[i], submissionId]
             );
         }
@@ -352,6 +352,8 @@ router.post('/submit-proof', uploadSubmission.array('screenshots', 20), async (r
     }
 });
 
+
+// Request redemption
 // Request redemption
 router.post('/request-redemption', async (req, res) => {
     const { userId } = req.body;
@@ -364,26 +366,29 @@ router.post('/request-redemption', async (req, res) => {
         const pool = req.app.get('db');
 
         // Get system settings
-        const [settingsRows] = await pool.query('SELECT * FROM system_settings LIMIT 1');
-        const settings = settingsRows[0];
+        const settingsResult = await pool.query('SELECT setting_key, setting_value FROM system_settings');
+        const settings = {};
+        settingsResult.rows.forEach(row => {
+            settings[row.setting_key] = parseInt(row.setting_value);
+        });
 
         // Calculate available points
-        const [pointsResult] = await pool.query(
-            `SELECT COALESCE(SUM(points_earned), 0) as total_points
-             FROM submissions 
-             WHERE user_id = ? AND status = 'active'`,
+        const pointsResult = await pool.query(
+            `SELECT COALESCE(SUM(points_awarded), 0) as total_points
+       FROM submissions 
+       WHERE user_id = $1 AND status = 'active'`,
             [userId]
         );
 
-        const [redeemedResult] = await pool.query(
-            `SELECT COALESCE(SUM(points_redeemed), 0) as redeemed_points
-             FROM redemptions 
-             WHERE user_id = ? AND status = 'approved'`,
+        const redeemedResult = await pool.query(
+            `SELECT COALESCE(SUM(points_requested), 0) as redeemed_points
+       FROM redemptions 
+       WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
-        const totalPoints = parseInt(pointsResult[0].total_points);
-        const redeemedPoints = parseInt(redeemedResult[0].redeemed_points);
+        const totalPoints = parseInt(pointsResult.rows[0].total_points);
+        const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
         const availablePoints = totalPoints - redeemedPoints;
 
         // Check if user has enough points
@@ -394,35 +399,35 @@ router.post('/request-redemption', async (req, res) => {
         }
 
         // Check if user already has a pending redemption
-        const [pendingCheck] = await pool.query(
+        const pendingCheck = await pool.query(
             `SELECT id FROM redemptions 
-             WHERE user_id = ? AND status = 'pending'`,
+       WHERE user_id = $1 AND status = 'pending'`,
             [userId]
         );
 
-        if (pendingCheck.length > 0) {
+        if (pendingCheck.rows.length > 0) {
             return res.status(400).json({
                 error: 'You already have a pending redemption request. Please wait for review.'
             });
         }
 
-        // Create redemption request
-        const [result] = await pool.query(
-            `INSERT INTO redemptions (user_id, points_redeemed, status) 
-             VALUES (?, ?, 'pending')`,
+        // Create redemption request with dynamic amount
+        const redemption = await pool.query(
+            `INSERT INTO redemptions (user_id, points_requested, status) 
+       VALUES ($1, $2, 'pending') RETURNING id`,
             [userId, settings.redemption_amount]
         );
 
         // Create notification for user
         await pool.query(
-            `INSERT INTO notifications (user_id, type, message) 
-             VALUES (?, 'info', 'Your redemption request has been submitted and is under review.')`,
-            [userId]
+            `INSERT INTO notifications (user_id, type, message, data) 
+       VALUES ($1, 'redemption_requested', 'Your redemption request has been submitted and is under review.', $2)`,
+            [userId, JSON.stringify({ redemptionId: redemption.rows[0].id })]
         );
 
         res.json({
             success: true,
-            redemptionId: result.insertId,
+            redemptionId: redemption.rows[0].id,
             message: 'Redemption request submitted successfully!'
         });
 
@@ -431,6 +436,7 @@ router.post('/request-redemption', async (req, res) => {
         res.status(500).json({ error: 'Failed to submit redemption request' });
     }
 });
+
 
 // Admin login
 router.post('/admin/login', async (req, res) => {
@@ -444,27 +450,27 @@ router.post('/admin/login', async (req, res) => {
         const pool = req.app.get('db');
 
         // Find admin
-        const [admin] = await pool.query(
-            'SELECT id, username, password_hash FROM admins WHERE username = ?',
+        const admin = await pool.query(
+            'SELECT id, username, password_hash FROM admins WHERE username = $1',
             [username]
         );
 
-        if (admin.length === 0) {
+        if (admin.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
         // Check password
-        const validPassword = await bcrypt.compare(password, admin[0].password_hash);
+        const validPassword = await bcrypt.compare(password, admin.rows[0].password_hash);
 
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
         // Create JWT token
-        const token = jwt.sign({ adminId: admin[0].id }, JWT_SECRET, { expiresIn: '7d' });
+        const token = jwt.sign({ adminId: admin.rows[0].id }, JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
-            adminId: admin[0].id,
+            adminId: admin.rows[0].id,
             token: token,
             message: 'Login successful!'
         });
@@ -474,7 +480,7 @@ router.post('/admin/login', async (req, res) => {
     }
 });
 
-// Get all redemption requests (admin)
+// Get all redemption requests (admin) - with pagination, filters, search
 router.get('/admin/redemptions', async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -484,48 +490,51 @@ router.get('/admin/redemptions', async (req, res) => {
         // Build WHERE clause
         let whereClause = 'WHERE 1=1';
         const queryParams = [];
+        let paramCount = 1;
 
         if (status !== 'all') {
-            whereClause += ` AND r.status = ?`;
+            whereClause += ` AND r.status = $${paramCount}`;
             queryParams.push(status);
+            paramCount++;
         }
 
         if (search) {
-            whereClause += ` AND u.whatsapp_number LIKE ?`;
+            whereClause += ` AND u.whatsapp_number ILIKE $${paramCount}`;
             queryParams.push(`%${search}%`);
+            paramCount++;
         }
 
         // Get total count
-        const [countResult] = await pool.query(
+        const countResult = await pool.query(
             `SELECT COUNT(*) as total 
-             FROM redemptions r
-             JOIN users u ON r.user_id = u.id
-             ${whereClause}`,
+       FROM redemptions r
+       JOIN users u ON r.user_id = u.id
+       ${whereClause}`,
             queryParams
         );
 
-        const total = parseInt(countResult[0].total);
+        const total = parseInt(countResult.rows[0].total);
 
         // Get paginated results
-        queryParams.push(parseInt(limit), offset);
-        const [redemptions] = await pool.query(
+        queryParams.push(limit, offset);
+        const redemptions = await pool.query(
             `SELECT r.*, u.whatsapp_number 
-             FROM redemptions r
-             JOIN users u ON r.user_id = u.id
-             ${whereClause}
-             ORDER BY 
-               CASE r.status 
-                 WHEN 'pending' THEN 1 
-                 WHEN 'approved' THEN 2 
-                 WHEN 'rejected' THEN 3 
-               END,
-               r.created_at DESC
-             LIMIT ? OFFSET ?`,
+       FROM redemptions r
+       JOIN users u ON r.user_id = u.id
+       ${whereClause}
+       ORDER BY 
+         CASE r.status 
+           WHEN 'pending' THEN 1 
+           WHEN 'approved' THEN 2 
+           WHEN 'rejected' THEN 3 
+         END,
+         r.requested_at DESC
+       LIMIT $${paramCount} OFFSET $${paramCount + 1}`,
             queryParams
         );
 
         res.json({
-            redemptions: redemptions,
+            redemptions: redemptions.rows,
             pagination: {
                 total,
                 page: parseInt(page),
@@ -546,23 +555,18 @@ router.get('/admin/user-submissions/:userId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [submissions] = await pool.query(
-            `SELECT s.*, GROUP_CONCAT(ur.recipient_number) as recipient_numbers
-             FROM submissions s
-             LEFT JOIN user_recipients ur ON s.id = ur.submission_id
-             WHERE s.user_id = ? 
-             GROUP BY s.id
-             ORDER BY s.created_at DESC`,
+        const submissions = await pool.query(
+            `SELECT s.*, 
+              array_agg(ur.recipient_number) as recipient_numbers
+       FROM submissions s
+       LEFT JOIN user_recipients ur ON s.id = ur.submission_id
+       WHERE s.user_id = $1 
+       GROUP BY s.id
+       ORDER BY s.created_at DESC`,
             [userId]
         );
 
-        // Convert concatenated string to array
-        const submissionsWithArrays = submissions.map(sub => ({
-            ...sub,
-            recipient_numbers: sub.recipient_numbers ? sub.recipient_numbers.split(',') : []
-        }));
-
-        res.json({ submissions: submissionsWithArrays });
+        res.json({ submissions: submissions.rows });
     } catch (error) {
         console.error('Failed to fetch submissions:', error);
         res.status(500).json({ error: 'Failed to fetch submissions' });
@@ -571,7 +575,7 @@ router.get('/admin/user-submissions/:userId', async (req, res) => {
 
 // Review redemption (admin)
 router.post('/admin/review-redemption', async (req, res) => {
-    const { redemptionId, action, giftCode, rejectionReason } = req.body;
+    const { redemptionId, action, giftCode, rejectionReason, adminId } = req.body;
 
     try {
         const pool = req.app.get('db');
@@ -580,24 +584,24 @@ router.post('/admin/review-redemption', async (req, res) => {
             // Update redemption
             await pool.query(
                 `UPDATE redemptions 
-                 SET status = 'approved', gift_code = ?, updated_at = NOW() 
-                 WHERE id = ?`,
-                [giftCode, redemptionId]
+         SET status = 'approved', gift_code = $1, reviewed_by = $2, reviewed_at = NOW() 
+         WHERE id = $3`,
+                [giftCode, adminId, redemptionId]
             );
 
             // Get redemption details
-            const [redemption] = await pool.query(
-                'SELECT user_id, points_redeemed FROM redemptions WHERE id = ?',
+            const redemption = await pool.query(
+                'SELECT user_id, points_requested FROM redemptions WHERE id = $1',
                 [redemptionId]
             );
 
-            const userId = redemption[0].user_id;
+            const userId = redemption.rows[0].user_id;
 
             // Create notification
             await pool.query(
-                `INSERT INTO notifications (user_id, type, message) 
-                 VALUES (?, 'info', CONCAT('Your redemption has been approved! Gift Code: ', ?))`,
-                [userId, giftCode]
+                `INSERT INTO notifications (user_id, type, message, data) 
+         VALUES ($1, 'redemption_approved', 'Your redemption has been approved!', $2)`,
+                [userId, JSON.stringify({ giftCode: giftCode, redemptionId: redemptionId })]
             );
 
             res.json({ success: true, message: 'Redemption approved' });
@@ -606,24 +610,24 @@ router.post('/admin/review-redemption', async (req, res) => {
             // Update redemption
             await pool.query(
                 `UPDATE redemptions 
-                 SET status = 'rejected', rejection_reason = ?, updated_at = NOW() 
-                 WHERE id = ?`,
-                [rejectionReason, redemptionId]
+         SET status = 'rejected', rejection_reason = $1, reviewed_by = $2, reviewed_at = NOW() 
+         WHERE id = $3`,
+                [rejectionReason, adminId, redemptionId]
             );
 
             // Get redemption details
-            const [redemption] = await pool.query(
-                'SELECT user_id FROM redemptions WHERE id = ?',
+            const redemption = await pool.query(
+                'SELECT user_id FROM redemptions WHERE id = $1',
                 [redemptionId]
             );
 
-            const userId = redemption[0].user_id;
+            const userId = redemption.rows[0].user_id;
 
             // Create notification
             await pool.query(
-                `INSERT INTO notifications (user_id, type, message) 
-                 VALUES (?, 'info', CONCAT('Your redemption request was rejected. Reason: ', ?))`,
-                [userId, rejectionReason]
+                `INSERT INTO notifications (user_id, type, message, data) 
+         VALUES ($1, 'redemption_rejected', 'Your redemption request was rejected.', $2)`,
+                [userId, JSON.stringify({ reason: rejectionReason, redemptionId: redemptionId })]
             );
 
             res.json({ success: true, message: 'Redemption rejected' });
@@ -635,45 +639,48 @@ router.post('/admin/review-redemption', async (req, res) => {
     }
 });
 
-// Get all users (admin)
+// Get all users (admin) - with pagination and search
 router.get('/admin/users', async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, search = '' } = req.query;
         const offset = (page - 1) * limit;
 
+        // Build WHERE clause
         let whereClause = 'WHERE 1=1';
         const queryParams = [];
 
         if (search) {
-            whereClause += ` AND u.whatsapp_number LIKE ?`;
+            whereClause += ` AND u.whatsapp_number ILIKE $1`;
             queryParams.push(`%${search}%`);
         }
 
         // Get total count
-        const [countResult] = await pool.query(
+        const countResult = await pool.query(
             `SELECT COUNT(*) as total FROM users u ${whereClause}`,
             queryParams
         );
 
-        const total = parseInt(countResult[0].total);
+        const total = parseInt(countResult.rows[0].total);
 
-        queryParams.push(parseInt(limit), offset);
+        // Get paginated results
+        const paramOffset = queryParams.length + 1;
+        queryParams.push(limit, offset);
 
-        const [users] = await pool.query(
+        const users = await pool.query(
             `SELECT u.id, u.whatsapp_number, u.created_at,
-              COALESCE(SUM(s.points_earned), 0) as total_points
-             FROM users u
-             LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-             ${whereClause}
-             GROUP BY u.id, u.whatsapp_number, u.created_at
-             ORDER BY u.created_at DESC
-             LIMIT ? OFFSET ?`,
+              COALESCE(SUM(s.points_awarded), 0) as total_points
+       FROM users u
+       LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+       ${whereClause}
+       GROUP BY u.id, u.whatsapp_number, u.created_at
+       ORDER BY u.created_at DESC
+       LIMIT $${paramOffset} OFFSET $${paramOffset + 1}`,
             queryParams
         );
 
         res.json({
-            users: users,
+            users: users.rows,
             pagination: {
                 total,
                 page: parseInt(page),
@@ -687,7 +694,9 @@ router.get('/admin/users', async (req, res) => {
     }
 });
 
-// Add points to user (admin)
+
+
+// Add points to user (admin - for testing)
 router.post('/admin/add-points', async (req, res) => {
     const { userId, points } = req.body;
 
@@ -698,9 +707,10 @@ router.post('/admin/add-points', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
+        // Create a test submission with the points
         await pool.query(
-            `INSERT INTO submissions (user_id, screenshot_url, points_earned, status) 
-             VALUES (?, '/uploads/admin-test.jpg', ?, 'active')`,
+            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
+       VALUES ($1, ARRAY['/uploads/admin-test.jpg'], $2, $2, 'active')`,
             [userId, points]
         );
 
@@ -710,6 +720,7 @@ router.post('/admin/add-points', async (req, res) => {
         res.status(500).json({ error: 'Failed to add points' });
     }
 });
+
 
 // Deduct points from user (admin)
 router.post('/admin/deduct-points', async (req, res) => {
@@ -723,14 +734,14 @@ router.post('/admin/deduct-points', async (req, res) => {
         const pool = req.app.get('db');
 
         // Check current available points
-        const [pointsResult] = await pool.query(
-            `SELECT COALESCE(SUM(points_earned), 0) as total_points
-             FROM submissions 
-             WHERE user_id = ? AND status = 'active'`,
+        const pointsResult = await pool.query(
+            `SELECT COALESCE(SUM(points_awarded), 0) as total_points
+       FROM submissions 
+       WHERE user_id = $1 AND status = 'active'`,
             [userId]
         );
 
-        const currentPoints = parseInt(pointsResult[0].total_points);
+        const currentPoints = parseInt(pointsResult.rows[0].total_points);
 
         if (currentPoints < points) {
             return res.status(400).json({
@@ -738,10 +749,11 @@ router.post('/admin/deduct-points', async (req, res) => {
             });
         }
 
+        // Create a negative submission to deduct points
         await pool.query(
-            `INSERT INTO submissions (user_id, screenshot_url, points_earned, status) 
-             VALUES (?, '/uploads/admin-deduct.jpg', ?, 'active')`,
-            [userId, -points]
+            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
+       VALUES ($1, ARRAY['/uploads/admin-deduct.jpg'], $2, $3, 'active')`,
+            [userId, -points, -points]
         );
 
         res.json({ success: true, message: `Deducted ${points} points successfully` });
@@ -758,7 +770,8 @@ router.delete('/admin/delete-user/:userId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        await pool.query('DELETE FROM users WHERE id = ?', [userId]);
+        // Delete user (CASCADE will handle related records)
+        await pool.query('DELETE FROM users WHERE id = $1', [userId]);
 
         res.json({ success: true, message: 'User deleted successfully' });
     } catch (error) {
@@ -766,6 +779,7 @@ router.delete('/admin/delete-user/:userId', async (req, res) => {
         res.status(500).json({ error: 'Failed to delete user' });
     }
 });
+
 
 // Cancel submission (user)
 router.post('/cancel-submission', async (req, res) => {
@@ -778,24 +792,26 @@ router.post('/cancel-submission', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [submission] = await pool.query(
-            `SELECT * FROM submissions WHERE id = ? AND user_id = ? AND status = 'active'`,
+        // Verify submission belongs to user and is active
+        const submission = await pool.query(
+            `SELECT * FROM submissions WHERE id = $1 AND user_id = $2 AND status = 'active'`,
             [submissionId, userId]
         );
 
-        if (submission.length === 0) {
+        if (submission.rows.length === 0) {
             return res.status(404).json({ error: 'Submission not found or already cancelled' });
         }
 
+        // Update submission status to cancelled
         await pool.query(
-            `UPDATE submissions SET status = 'cancelled' WHERE id = ?`,
+            `UPDATE submissions SET status = 'cancelled', cancelled_at = NOW() WHERE id = $1`,
             [submissionId]
         );
 
         res.json({
             success: true,
             message: 'Submission cancelled successfully',
-            pointsDeducted: submission[0].points_earned
+            pointsDeducted: submission.rows[0].points_awarded
         });
 
     } catch (error) {
@@ -804,6 +820,7 @@ router.post('/cancel-submission', async (req, res) => {
     }
 });
 
+
 // Get user profile (admin)
 router.get('/admin/user-profile/:userId', async (req, res) => {
     const { userId } = req.params;
@@ -811,26 +828,29 @@ router.get('/admin/user-profile/:userId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [user] = await pool.query(
+        // Get user info with total points
+        const user = await pool.query(
             `SELECT u.id, u.whatsapp_number, u.created_at,
-              COALESCE(SUM(s.points_earned), 0) as total_points
-             FROM users u
-             LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-             WHERE u.id = ?
-             GROUP BY u.id, u.whatsapp_number, u.created_at`,
+              COALESCE(SUM(s.points_awarded), 0) as total_points
+       FROM users u
+       LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+       WHERE u.id = $1
+       GROUP BY u.id, u.whatsapp_number, u.created_at`,
             [userId]
         );
 
-        if (user.length === 0) {
+        if (user.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        res.json({ user: user[0] });
+        res.json({ user: user.rows[0] });
     } catch (error) {
         console.error('Failed to fetch user profile:', error);
         res.status(500).json({ error: 'Failed to fetch user profile' });
     }
 });
+
+
 
 // Delete single submission (admin)
 router.delete('/admin/delete-submission/:submissionId', async (req, res) => {
@@ -839,21 +859,23 @@ router.delete('/admin/delete-submission/:submissionId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [submission] = await pool.query(
-            'SELECT user_id, points_earned, status FROM submissions WHERE id = ?',
+        // Get submission details before deletion
+        const submission = await pool.query(
+            'SELECT user_id, points_awarded, status FROM submissions WHERE id = $1',
             [submissionId]
         );
 
-        if (submission.length === 0) {
+        if (submission.rows.length === 0) {
             return res.status(404).json({ error: 'Submission not found' });
         }
 
-        await pool.query('DELETE FROM submissions WHERE id = ?', [submissionId]);
+        // Delete submission (CASCADE will handle user_recipients)
+        await pool.query('DELETE FROM submissions WHERE id = $1', [submissionId]);
 
         res.json({
             success: true,
             message: 'Submission deleted successfully',
-            pointsDeducted: submission[0].status === 'active' ? submission[0].points_earned : 0
+            pointsDeducted: submission.rows[0].status === 'active' ? submission.rows[0].points_awarded : 0
         });
 
     } catch (error) {
@@ -873,22 +895,21 @@ router.post('/admin/bulk-delete-submissions', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [pointsResult] = await pool.query(
-            `SELECT SUM(points_earned) as total_points 
-             FROM submissions 
-             WHERE id IN (${submissionIds.map(() => '?').join(',')}) AND status = 'active'`,
-            submissionIds
+        // Get total points that will be deducted
+        const pointsResult = await pool.query(
+            `SELECT SUM(points_awarded) as total_points 
+       FROM submissions 
+       WHERE id = ANY($1) AND status = 'active'`,
+            [submissionIds]
         );
 
-        await pool.query(
-            `DELETE FROM submissions WHERE id IN (${submissionIds.map(() => '?').join(',')})`,
-            submissionIds
-        );
+        // Delete submissions
+        await pool.query('DELETE FROM submissions WHERE id = ANY($1)', [submissionIds]);
 
         res.json({
             success: true,
             message: `${submissionIds.length} submissions deleted successfully`,
-            pointsDeducted: parseInt(pointsResult[0].total_points || 0)
+            pointsDeducted: parseInt(pointsResult.rows[0].total_points || 0)
         });
 
     } catch (error) {
@@ -897,16 +918,17 @@ router.post('/admin/bulk-delete-submissions', async (req, res) => {
     }
 });
 
+
 // Get all offers (admin)
 router.get('/admin/offers', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [offers] = await pool.query(
+        const offers = await pool.query(
             'SELECT * FROM offers ORDER BY created_at DESC'
         );
 
-        res.json({ offers: offers });
+        res.json({ offers: offers.rows });
     } catch (error) {
         console.error('Failed to fetch offers:', error);
         res.status(500).json({ error: 'Failed to fetch offers' });
@@ -926,12 +948,13 @@ router.post('/admin/create-offer', uploadOffer.single('image'), async (req, res)
         const pool = req.app.get('db');
         const imagePath = `/uploads/offers/${image.filename}`;
 
-        const [result] = await pool.query(
-            'INSERT INTO offers (image_url, caption, is_active) VALUES (?, ?, 0)',
+        // Create new offer
+        const newOffer = await pool.query(
+            'INSERT INTO offers (image_url, caption, is_active) VALUES ($1, $2, false) RETURNING *',
             [imagePath, caption]
         );
 
-        res.json({ success: true, offer: { id: result.insertId, image_url: imagePath, caption, is_active: 0 } });
+        res.json({ success: true, offer: newOffer.rows[0] });
     } catch (error) {
         console.error('Failed to create offer:', error);
         res.status(500).json({ error: 'Failed to create offer' });
@@ -948,14 +971,16 @@ router.put('/admin/update-offer/:offerId', uploadOffer.single('image'), async (r
         const pool = req.app.get('db');
 
         if (image) {
+            // Update with new image
             const imagePath = `/uploads/offers/${image.filename}`;
             await pool.query(
-                'UPDATE offers SET caption = ?, image_url = ? WHERE id = ?',
+                'UPDATE offers SET caption = $1, image_url = $2 WHERE id = $3',
                 [caption, imagePath, offerId]
             );
         } else {
+            // Update caption only
             await pool.query(
-                'UPDATE offers SET caption = ? WHERE id = ?',
+                'UPDATE offers SET caption = $1 WHERE id = $2',
                 [caption, offerId]
             );
         }
@@ -974,8 +999,11 @@ router.post('/admin/set-active-offer', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        await pool.query('UPDATE offers SET is_active = 0');
-        await pool.query('UPDATE offers SET is_active = 1 WHERE id = ?', [offerId]);
+        // Set all offers to inactive
+        await pool.query('UPDATE offers SET is_active = false');
+
+        // Set selected offer to active
+        await pool.query('UPDATE offers SET is_active = true WHERE id = $1', [offerId]);
 
         res.json({ success: true, message: 'Active offer updated' });
     } catch (error) {
@@ -991,7 +1019,7 @@ router.delete('/admin/delete-offer/:offerId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        await pool.query('DELETE FROM offers WHERE id = ?', [offerId]);
+        await pool.query('DELETE FROM offers WHERE id = $1', [offerId]);
 
         res.json({ success: true, message: 'Offer deleted successfully' });
     } catch (error) {
@@ -1000,6 +1028,7 @@ router.delete('/admin/delete-offer/:offerId', async (req, res) => {
     }
 });
 
+
 // Get all recipient numbers for a user
 router.get('/user-recipients/:userId', async (req, res) => {
     const { userId } = req.params;
@@ -1007,32 +1036,34 @@ router.get('/user-recipients/:userId', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [recipients] = await pool.query(
-            `SELECT recipient_number, MIN(created_at) as first_shared
-             FROM user_recipients
-             WHERE user_id = ? AND recipient_number IS NOT NULL
-             GROUP BY recipient_number
-             ORDER BY recipient_number`,
+        const recipients = await pool.query(
+            `SELECT DISTINCT ON (recipient_number) 
+              recipient_number, 
+              MIN(created_at) as first_shared
+       FROM user_recipients
+       WHERE user_id = $1 AND recipient_number IS NOT NULL
+       GROUP BY recipient_number
+       ORDER BY recipient_number, first_shared DESC`,
             [userId]
         );
 
-        res.json({ recipients: recipients });
+        res.json({ recipients: recipients.rows });
     } catch (error) {
         console.error('Failed to fetch recipients:', error);
         res.status(500).json({ error: 'Failed to fetch recipients' });
     }
 });
 
-// Get system settings
-router.get('/settings', async (req, res) => {
+// Get system settings (admin)
+router.get('/admin/settings', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        const [settings] = await pool.query(
-            'SELECT * FROM system_settings LIMIT 1'
+        const settings = await pool.query(
+            'SELECT * FROM system_settings ORDER BY setting_key'
         );
 
-        res.json({ settings: settings[0] || {} });
+        res.json({ settings: settings.rows });
     } catch (error) {
         console.error('Failed to fetch settings:', error);
         res.status(500).json({ error: 'Failed to fetch settings' });
@@ -1040,23 +1071,26 @@ router.get('/settings', async (req, res) => {
 });
 
 // Update system setting (admin)
-router.put('/admin/settings', async (req, res) => {
-    const { points_per_rupee, min_redemption_points, redemption_amount } = req.body;
+router.put('/admin/settings/:settingKey', async (req, res) => {
+    const { settingKey } = req.params;
+    const { value } = req.body;
+
+    if (!value || isNaN(value) || parseInt(value) <= 0) {
+        return res.status(400).json({ error: 'Value must be a positive number' });
+    }
 
     try {
         const pool = req.app.get('db');
 
         await pool.query(
-            `UPDATE system_settings 
-             SET points_per_rupee = ?, min_redemption_points = ?, redemption_amount = ?, updated_at = NOW()
-             WHERE id = 1`,
-            [points_per_rupee, min_redemption_points, redemption_amount]
+            'UPDATE system_settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
+            [value, settingKey]
         );
 
-        res.json({ success: true, message: 'Settings updated successfully' });
+        res.json({ success: true, message: 'Setting updated successfully' });
     } catch (error) {
-        console.error('Failed to update settings:', error);
-        res.status(500).json({ error: 'Failed to update settings' });
+        console.error('Failed to update setting:', error);
+        res.status(500).json({ error: 'Failed to update setting' });
     }
 });
 
