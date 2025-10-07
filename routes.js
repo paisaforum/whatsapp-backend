@@ -8,90 +8,82 @@ const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 
-// Ensure uploads directory exists
-const uploadsDir = './uploads';
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
-}
 
-// Configure storage
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
+
+// File upload configuration - Organized by type
+const uploadsDir = './uploads';
+const bannersDir = './uploads/banners';
+const offersDir = './uploads/offers';
+const submissionsDir = './uploads/submissions';
+
+// Ensure all directories exist
+[uploadsDir, bannersDir, offersDir, submissionsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+// Banner storage
+const bannerStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/banners/'),
+    filename: (req, file, cb) => {
+        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        cb(null, uniqueName);
+    }
+});
+
+// Offer storage
+const offerStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/offers/'),
+    filename: (req, file, cb) => {
+        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        cb(null, uniqueName);
+    }
+});
+
+// Submission storage
+const submissionStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/submissions/'),
+    filename: (req, file, cb) => {
         const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
         cb(null, uniqueName);
     }
 });
 
 // Create upload middleware
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-    fileFilter: function (req, file, cb) {
-        if (file.mimetype.startsWith('image/')) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only images are allowed'));
-        }
-    }
-});
-
-
-// Storage for user submissions
-const submissionStorage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/submissions/');
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'screenshot-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-// Storage for admin offers
-const offerStorage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/offers/');
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'offer-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-// Multer upload for submissions
-const uploadSubmission = multer({
-    storage: submissionStorage,
+const uploadBanner = multer({
+    storage: bannerStorage,
     limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: function (req, file, cb) {
-        const filetypes = /jpeg|jpg|png|gif/;
-        const mimetype = filetypes.test(file.mimetype);
-        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-
-        if (mimetype && extname) {
-            return cb(null, true);
-        }
-        cb(new Error('Only image files are allowed'));
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Only images allowed'));
     }
 });
 
-// Multer upload for offers
 const uploadOffer = multer({
     storage: offerStorage,
     limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: function (req, file, cb) {
-        const filetypes = /jpeg|jpg|png|gif/;
-        const mimetype = filetypes.test(file.mimetype);
-        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-
-        if (mimetype && extname) {
-            return cb(null, true);
-        }
-        cb(new Error('Only image files are allowed'));
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Only images allowed'));
     }
 });
+
+const uploadSubmission = multer({
+    storage: submissionStorage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Only images allowed'));
+    }
+});
+
+// Backwards compatibility
+const upload = uploadSubmission;
+
+
+
+
 
 const JWT_SECRET = 'your-secret-key-change-this-in-production'; // In production, use environment variable
 
@@ -1789,7 +1781,7 @@ router.get('/admin/banners', async (req, res) => {
 });
 
 // Create banner (admin)
-router.post('/admin/create-banner', upload.single('image'), async (req, res) => {
+router.post('/admin/create-banner', uploadBanner.single('image'), async (req, res) => {
     const { title, link_url, display_order } = req.body;
     
     if (!req.file) {
@@ -1798,7 +1790,7 @@ router.post('/admin/create-banner', upload.single('image'), async (req, res) => 
     
     try {
         const pool = req.app.get('db');
-        const imagePath = '/uploads/' + req.file.filename;
+        const imagePath = '/uploads/banners/' + req.file.filename;
         
         await pool.query(
             'INSERT INTO banners (image_url, title, link_url, display_order) VALUES ($1, $2, $3, $4)',
@@ -1813,7 +1805,7 @@ router.post('/admin/create-banner', upload.single('image'), async (req, res) => 
 });
 
 // Update banner (admin)
-router.put('/admin/update-banner/:id', upload.single('image'), async (req, res) => {
+router.put('/admin/update-banner/:id', uploadBanner.single('image'), async (req, res) => {
     const { id } = req.params;
     const { title, link_url, display_order } = req.body;
     
@@ -1821,7 +1813,7 @@ router.put('/admin/update-banner/:id', upload.single('image'), async (req, res) 
         const pool = req.app.get('db');
         
         if (req.file) {
-            const imagePath = '/uploads/' + req.file.filename;
+            const imagePath = '/uploads/banners/' + req.file.filename;
             await pool.query(
                 'UPDATE banners SET image_url = $1, title = $2, link_url = $3, display_order = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5',
                 [imagePath, title || null, link_url || null, display_order || 0, id]
