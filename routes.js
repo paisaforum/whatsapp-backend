@@ -1563,4 +1563,161 @@ router.get('/admin/system-stats', async (req, res) => {
 });
 
 
+// ============================================
+// ANALYTICS ROUTES (Admin Only)
+// ============================================
+
+// Get user growth analytics
+router.get('/admin/analytics/user-growth', async (req, res) => {
+    const { days = 30 } = req.query;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        // Get daily user registrations for the last X days
+        const result = await pool.query(`
+            SELECT 
+                DATE(created_at) as date,
+                COUNT(*) as count
+            FROM users
+            WHERE created_at >= CURRENT_DATE - INTERVAL '${parseInt(days)} days'
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        `);
+        
+        res.json({ data: result.rows });
+        
+    } catch (error) {
+        console.error('Failed to get user growth analytics:', error);
+        res.status(500).json({ error: 'Failed to get user growth analytics' });
+    }
+});
+
+// Get points distribution analytics
+router.get('/admin/analytics/points-distribution', async (req, res) => {
+    const { days = 30 } = req.query;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        // Get daily points awarded for the last X days
+        const result = await pool.query(`
+            SELECT 
+                DATE(created_at) as date,
+                SUM(points_awarded) as total_points,
+                COUNT(*) as submission_count
+            FROM submissions
+            WHERE created_at >= CURRENT_DATE - INTERVAL '${parseInt(days)} days'
+            AND status = 'active'
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        `);
+        
+        res.json({ data: result.rows });
+        
+    } catch (error) {
+        console.error('Failed to get points distribution analytics:', error);
+        res.status(500).json({ error: 'Failed to get points distribution analytics' });
+    }
+});
+
+// Get redemption status breakdown
+router.get('/admin/analytics/redemption-status', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Get count by status
+        const result = await pool.query(`
+            SELECT 
+                status,
+                COUNT(*) as count,
+                SUM(points_requested) as total_points
+            FROM redemptions
+            GROUP BY status
+        `);
+        
+        res.json({ data: result.rows });
+        
+    } catch (error) {
+        console.error('Failed to get redemption status analytics:', error);
+        res.status(500).json({ error: 'Failed to get redemption status analytics' });
+    }
+});
+
+// Get active users trend
+router.get('/admin/analytics/active-users', async (req, res) => {
+    const { days = 30 } = req.query;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        // Get daily active users (users who made submissions that day)
+        const result = await pool.query(`
+            SELECT 
+                DATE(s.created_at) as date,
+                COUNT(DISTINCT s.user_id) as active_users
+            FROM submissions s
+            WHERE s.created_at >= CURRENT_DATE - INTERVAL '${parseInt(days)} days'
+            GROUP BY DATE(s.created_at)
+            ORDER BY date ASC
+        `);
+        
+        res.json({ data: result.rows });
+        
+    } catch (error) {
+        console.error('Failed to get active users analytics:', error);
+        res.status(500).json({ error: 'Failed to get active users analytics' });
+    }
+});
+
+// Get overview statistics for analytics dashboard
+router.get('/admin/analytics/overview', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Total users
+        const totalUsers = await pool.query('SELECT COUNT(*) FROM users');
+        
+        // Total points distributed (all time)
+        const totalPoints = await pool.query('SELECT SUM(points_awarded) FROM submissions WHERE status = \'active\'');
+        
+        // Total redeemed amount
+        const totalRedeemed = await pool.query('SELECT SUM(points_requested) FROM redemptions WHERE status = \'approved\'');
+        
+        // Active users today
+        const activeToday = await pool.query(`
+            SELECT COUNT(DISTINCT user_id) 
+            FROM submissions 
+            WHERE DATE(created_at) = CURRENT_DATE
+        `);
+        
+        // New users this week
+        const newUsersWeek = await pool.query(`
+            SELECT COUNT(*) 
+            FROM users 
+            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+        `);
+        
+        // Pending redemptions
+        const pendingRedemptions = await pool.query(`
+            SELECT COUNT(*) 
+            FROM redemptions 
+            WHERE status = 'pending'
+        `);
+        
+        res.json({
+            totalUsers: parseInt(totalUsers.rows[0].count),
+            totalPointsDistributed: parseInt(totalPoints.rows[0].sum || 0),
+            totalRedeemed: parseInt(totalRedeemed.rows[0].sum || 0),
+            activeToday: parseInt(activeToday.rows[0].count),
+            newUsersThisWeek: parseInt(newUsersWeek.rows[0].count),
+            pendingRedemptions: parseInt(pendingRedemptions.rows[0].count)
+        });
+        
+    } catch (error) {
+        console.error('Failed to get analytics overview:', error);
+        res.status(500).json({ error: 'Failed to get analytics overview' });
+    }
+});
+
 module.exports = router;
