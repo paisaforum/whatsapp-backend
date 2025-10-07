@@ -1471,4 +1471,96 @@ router.get('/admin/messages-history', async (req, res) => {
 });
 
 
+
+// ============================================
+// DATA MANAGEMENT ROUTES (Admin Only)
+// ============================================
+
+// Clear all messages
+router.delete('/admin/clear-all-messages', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        await pool.query('DELETE FROM broadcast_reads');
+        await pool.query('DELETE FROM user_messages');
+        await pool.query('DELETE FROM broadcast_messages');
+
+        res.json({ success: true, message: 'All messages cleared successfully' });
+
+    } catch (error) {
+        console.error('Failed to clear messages:', error);
+        res.status(500).json({ error: 'Failed to clear messages' });
+    }
+});
+
+// Clear all submissions (keeps users)
+router.delete('/admin/clear-all-submissions', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // This will cascade delete user_recipients due to foreign key
+        await pool.query('DELETE FROM submissions');
+
+        res.json({ success: true, message: 'All submissions cleared successfully' });
+
+    } catch (error) {
+        console.error('Failed to clear submissions:', error);
+        res.status(500).json({ error: 'Failed to clear submissions' });
+    }
+});
+
+// Clear all redemptions (keeps users)
+router.delete('/admin/clear-all-redemptions', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        await pool.query('DELETE FROM redemptions');
+
+        res.json({ success: true, message: 'All redemptions cleared successfully' });
+
+    } catch (error) {
+        console.error('Failed to clear redemptions:', error);
+        res.status(500).json({ error: 'Failed to clear redemptions' });
+    }
+});
+
+// Clear all user recipients history
+router.delete('/admin/clear-recipients-history', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        await pool.query('DELETE FROM user_recipients');
+
+        res.json({ success: true, message: 'Recipient history cleared successfully' });
+
+    } catch (error) {
+        console.error('Failed to clear recipients:', error);
+        res.status(500).json({ error: 'Failed to clear recipients history' });
+    }
+});
+
+// Get system statistics for data management
+router.get('/admin/system-stats', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const stats = {
+            totalUsers: (await pool.query('SELECT COUNT(*) FROM users')).rows[0].count,
+            totalSubmissions: (await pool.query('SELECT COUNT(*) FROM submissions')).rows[0].count,
+            totalRedemptions: (await pool.query('SELECT COUNT(*) FROM redemptions')).rows[0].count,
+            totalMessages: (await pool.query('SELECT COUNT(*) FROM user_messages')).rows[0].count,
+            totalBroadcasts: (await pool.query('SELECT COUNT(*) FROM broadcast_messages')).rows[0].count,
+            totalRecipients: (await pool.query('SELECT COUNT(*) FROM user_recipients')).rows[0].count,
+            totalOffers: (await pool.query('SELECT COUNT(*) FROM offers')).rows[0].count
+        };
+
+        res.json({ stats });
+
+    } catch (error) {
+        console.error('Failed to get system stats:', error);
+        res.status(500).json({ error: 'Failed to get system stats' });
+    }
+});
+
+
 module.exports = router;
