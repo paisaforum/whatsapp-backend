@@ -1720,4 +1720,122 @@ router.get('/admin/analytics/overview', async (req, res) => {
     }
 });
 
+// ============================================
+// BANNER MANAGEMENT ROUTES
+// ============================================
+
+// Get all active banners (public)
+router.get('/banners', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const banners = await pool.query(`
+            SELECT id, image_url, title, link_url, display_order
+            FROM banners 
+            WHERE is_active = true 
+            ORDER BY display_order ASC, created_at DESC
+        `);
+        res.json({ banners: banners.rows });
+    } catch (error) {
+        console.error('Failed to get banners:', error);
+        res.status(500).json({ error: 'Failed to get banners' });
+    }
+});
+
+// Get all banners (admin)
+router.get('/admin/banners', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const banners = await pool.query(`
+            SELECT * FROM banners 
+            ORDER BY display_order ASC, created_at DESC
+        `);
+        res.json({ banners: banners.rows });
+    } catch (error) {
+        console.error('Failed to get banners:', error);
+        res.status(500).json({ error: 'Failed to get banners' });
+    }
+});
+
+// Create banner (admin)
+router.post('/admin/create-banner', upload.single('image'), async (req, res) => {
+    const { title, link_url, display_order } = req.body;
+    
+    if (!req.file) {
+        return res.status(400).json({ error: 'Image is required' });
+    }
+    
+    try {
+        const pool = req.app.get('db');
+        const imagePath = '/uploads/' + req.file.filename;
+        
+        await pool.query(
+            'INSERT INTO banners (image_url, title, link_url, display_order) VALUES ($1, $2, $3, $4)',
+            [imagePath, title || null, link_url || null, display_order || 0]
+        );
+        
+        res.json({ success: true, message: 'Banner created successfully' });
+    } catch (error) {
+        console.error('Failed to create banner:', error);
+        res.status(500).json({ error: 'Failed to create banner' });
+    }
+});
+
+// Update banner (admin)
+router.put('/admin/update-banner/:id', upload.single('image'), async (req, res) => {
+    const { id } = req.params;
+    const { title, link_url, display_order } = req.body;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        if (req.file) {
+            const imagePath = '/uploads/' + req.file.filename;
+            await pool.query(
+                'UPDATE banners SET image_url = $1, title = $2, link_url = $3, display_order = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5',
+                [imagePath, title || null, link_url || null, display_order || 0, id]
+            );
+        } else {
+            await pool.query(
+                'UPDATE banners SET title = $1, link_url = $2, display_order = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
+                [title || null, link_url || null, display_order || 0, id]
+            );
+        }
+        
+        res.json({ success: true, message: 'Banner updated successfully' });
+    } catch (error) {
+        console.error('Failed to update banner:', error);
+        res.status(500).json({ error: 'Failed to update banner' });
+    }
+});
+
+// Toggle banner status (admin)
+router.post('/admin/toggle-banner/:id', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        const pool = req.app.get('db');
+        await pool.query(
+            'UPDATE banners SET is_active = NOT is_active, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            [id]
+        );
+        res.json({ success: true, message: 'Banner status updated' });
+    } catch (error) {
+        console.error('Failed to toggle banner:', error);
+        res.status(500).json({ error: 'Failed to toggle banner status' });
+    }
+});
+
+// Delete banner (admin)
+router.delete('/admin/delete-banner/:id', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        const pool = req.app.get('db');
+        await pool.query('DELETE FROM banners WHERE id = $1', [id]);
+        res.json({ success: true, message: 'Banner deleted successfully' });
+    } catch (error) {
+        console.error('Failed to delete banner:', error);
+        res.status(500).json({ error: 'Failed to delete banner' });
+    }
+});
 module.exports = router;
