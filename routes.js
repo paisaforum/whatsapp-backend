@@ -1260,7 +1260,215 @@ router.put('/admin/platform-stats-config', async (req, res) => {
 });
 
 
+// ============================================
+// MESSAGING SYSTEM ROUTES
+// ============================================
 
+// Get messages for a user (inbox)
+router.get('/messages/:userId', async (req, res) => {
+    const { userId } = req.params;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        // Get user-specific messages
+        const userMessages = await pool.query(`
+            SELECT 
+                id,
+                title,
+                message,
+                is_read,
+                created_at,
+                'user' as message_type
+            FROM user_messages 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC
+        `, [userId]);
+        
+        // Get broadcast messages that this user hasn't read yet
+        const broadcasts = await pool.query(`
+            SELECT 
+                bm.id,
+                bm.title,
+                bm.message,
+                bm.created_at,
+                'broadcast' as message_type,
+                CASE WHEN br.user_id IS NULL THEN false ELSE true END as is_read
+            FROM broadcast_messages bm
+            LEFT JOIN broadcast_reads br ON bm.id = br.broadcast_id AND br.user_id = $1
+            ORDER BY bm.created_at DESC
+        `, [userId]);
+        
+        // Combine and sort by date
+        const allMessages = [...userMessages.rows, ...broadcasts.rows]
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        
+        res.json({ messages: allMessages });
+        
+    } catch (error) {
+        console.error('Failed to get messages:', error);
+        res.status(500).json({ error: 'Failed to get messages' });
+    }
+});
+
+// Get unread message count for a user
+router.get('/messages/:userId/unread-count', async (req, res) => {
+    const { userId } = req.params;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        // Count unread user messages
+        const userUnread = await pool.query(
+            'SELECT COUNT(*) FROM user_messages WHERE user_id = $1 AND is_read = false',
+            [userId]
+        );
+        
+        // Count unread broadcasts (broadcasts not in broadcast_reads for this user)
+        const broadcastUnread = await pool.query(`
+            SELECT COUNT(*) FROM broadcast_messages bm
+            WHERE NOT EXISTS (
+                SELECT 1 FROM broadcast_reads br 
+                WHERE br.broadcast_id = bm.id AND br.user_id = $1
+            )
+        `, [userId]);
+        
+        const totalUnread = parseInt(userUnread.rows[0].count) + parseInt(broadcastUnread.rows[0].count);
+        
+        res.json({ unreadCount: totalUnread });
+        
+    } catch (error) {
+        console.error('Failed to get unread count:', error);
+        res.status(500).json({ error: 'Failed to get unread count' });
+    }
+});
+
+// Mark message as read
+router.put('/messages/:messageId/read', async (req, res) => {
+    const { messageId } = req.params;
+    const { userId, messageType } = req.body;
+    
+    try {
+        const pool = req.app.get('db');
+        
+        if (messageType === 'user') {
+            // Mark user message as read
+            await pool.query(
+                'UPDATE user_messages SET is_read = true WHERE id = $1 AND user_id = $2',
+                [messageId, userId]
+            );
+        } else if (messageType === 'broadcast') {
+            // Mark broadcast as read by adding to broadcast_reads
+            await pool.query(
+                'INSERT INTO broadcast_reads (user_id, broadcast_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                [userId, messageId]
+            );
+        }
+        
+        res.json({ success: true });
+        
+    } catch (error) {
+        console.error('Failed to mark as read:', error);
+        res.status(500).json({ error: 'Failed to mark as read' });
+    }
+});
+
+// Send message to specific user (admin only)
+router.post('/admin/send-message', async (req, res) => {
+    const { userId, title, message, adminId } = req.body;
+    
+    if (!userId || !title || !message) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    try {
+        const pool = req.app.get('db');
+        
+        await pool.query(
+            'INSERT INTO user_messages (user_id, title, message, sent_by_admin) VALUES ($1, $2, $3, $4)',
+            [userId, title, message, adminId]
+        );
+        
+        res.json({ success: true, message: 'Message sent successfully' });
+        
+    } catch (error) {
+        console.error('Failed to send message:', error);
+        res.status(500).json({ error: 'Failed to send message' });
+    }
+});
+
+// Broadcast message to all users (admin only)
+router.post('/admin/broadcast-message', async (req, res) => {
+    const { title, message, adminId } = req.body;
+    
+    if (!title || !message) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    try {
+        const pool = req.app.get('db');
+        
+        await pool.query(
+            'INSERT INTO broadcast_messages (title, message, sent_by_admin) VALUES ($1, $2, $3)',
+            [title, message, adminId]
+        );
+        
+        res.json({ success: true, message: 'Broadcast sent successfully' });
+        
+    } catch (error) {
+        console.error('Failed to broadcast message:', error);
+        res.status(500).json({ error: 'Failed to broadcast message' });
+    }
+});
+
+// Get message history (admin only)
+router.get('/admin/messages-history', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Get user messages with user info
+        const userMessages = await pool.query(`
+            SELECT 
+                um.id,
+                um.title,
+                um.message,
+                um.created_at,
+                u.whatsapp_number,
+                'user' as message_type,
+                um.is_read
+            FROM user_messages um
+            JOIN users u ON um.user_id = u.id
+            ORDER BY um.created_at DESC
+            LIMIT 50
+        `);
+        
+        // Get broadcast messages with read count
+        const broadcasts = await pool.query(`
+            SELECT 
+                bm.id,
+                bm.title,
+                bm.message,
+                bm.created_at,
+                'broadcast' as message_type,
+                COUNT(br.user_id) as read_count,
+                (SELECT COUNT(*) FROM users) as total_users
+            FROM broadcast_messages bm
+            LEFT JOIN broadcast_reads br ON bm.id = br.broadcast_id
+            GROUP BY bm.id
+            ORDER BY bm.created_at DESC
+            LIMIT 50
+        `);
+        
+        res.json({ 
+            userMessages: userMessages.rows,
+            broadcasts: broadcasts.rows
+        });
+        
+    } catch (error) {
+        console.error('Failed to get message history:', error);
+        res.status(500).json({ error: 'Failed to get message history' });
+    }
+});
 
 
 module.exports = router;
