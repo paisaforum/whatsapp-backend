@@ -1108,4 +1108,159 @@ router.put('/admin/settings/:settingKey', async (req, res) => {
     }
 });
 
+
+
+
+
+// ============================================
+// PLATFORM STATS ROUTES
+// ============================================
+
+// Get calculated platform stats (public - for user dashboard)
+router.get('/platform-stats', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get config
+        const config = await pool.query('SELECT * FROM platform_stats_config WHERE id = 1');
+
+        if (config.rows.length === 0) {
+            return res.status(404).json({ error: 'Platform stats config not found' });
+        }
+
+        const cfg = config.rows[0];
+        const now = new Date();
+
+        // Calculate Total Users
+        const usersDaysPassed = (now - new Date(cfg.total_users_start_date)) / (1000 * 60 * 60 * 24);
+        const usersDaysTotal = cfg.total_users_days_to_complete;
+        const usersProgress = Math.min(usersDaysPassed / usersDaysTotal, 1);
+        const usersToAdd = Math.floor((cfg.total_users_target - cfg.total_users_current) * usersProgress);
+        const currentUsers = Math.min(cfg.total_users_current + usersToAdd, cfg.total_users_target);
+
+        // Calculate Earned Today (check if needs reset)
+        const today = now.toISOString().split('T')[0];
+        const lastReset = new Date(cfg.earned_today_last_reset).toISOString().split('T')[0];
+        let earnedToday = cfg.earned_today_current;
+
+        if (today !== lastReset) {
+            // Reset earned today
+            await pool.query(
+                'UPDATE platform_stats_config SET earned_today_current = 0, earned_today_last_reset = CURRENT_DATE WHERE id = 1'
+            );
+            earnedToday = 0;
+        }
+
+        // Calculate earned today based on hours passed
+        const currentHour = now.getHours();
+        const hoursProgress = currentHour / cfg.earned_today_hours_to_complete;
+        const targetEarned = Math.floor(cfg.earned_today_target * hoursProgress);
+        earnedToday = Math.min(earnedToday + Math.floor(Math.random() * 50) + 10, targetEarned);
+
+        // Update earned today in database
+        await pool.query(
+            'UPDATE platform_stats_config SET earned_today_current = $1 WHERE id = 1',
+            [earnedToday]
+        );
+
+        // Calculate Active Now (random between min and max)
+        const activeNow = Math.floor(Math.random() * (cfg.active_now_max - cfg.active_now_min + 1)) + cfg.active_now_min;
+
+        // Calculate Total Paid
+        const paidDaysPassed = (now - new Date(cfg.total_paid_start_date)) / (1000 * 60 * 60 * 24);
+        const paidDaysTotal = cfg.total_paid_days_to_complete;
+        const paidProgress = Math.min(paidDaysPassed / paidDaysTotal, 1);
+        const amountToAdd = (parseFloat(cfg.total_paid_target) - parseFloat(cfg.total_paid_current)) * paidProgress;
+        const currentPaid = Math.min(parseFloat(cfg.total_paid_current) + amountToAdd, parseFloat(cfg.total_paid_target));
+
+        res.json({
+            totalUsers: currentUsers,
+            earnedToday: earnedToday,
+            activeNow: activeNow,
+            totalPaid: Math.floor(currentPaid)
+        });
+
+    } catch (error) {
+        console.error('Failed to get platform stats:', error);
+        res.status(500).json({ error: 'Failed to get platform stats' });
+    }
+});
+
+// Get platform stats config (admin only)
+router.get('/admin/platform-stats-config', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const config = await pool.query('SELECT * FROM platform_stats_config WHERE id = 1');
+
+        if (config.rows.length === 0) {
+            return res.status(404).json({ error: 'Config not found' });
+        }
+
+        res.json({ config: config.rows[0] });
+    } catch (error) {
+        console.error('Failed to get config:', error);
+        res.status(500).json({ error: 'Failed to get config' });
+    }
+});
+
+// Update platform stats config (admin only)
+router.put('/admin/platform-stats-config', async (req, res) => {
+    const {
+        total_users_current,
+        total_users_target,
+        total_users_days_to_complete,
+        earned_today_target,
+        earned_today_hours_to_complete,
+        active_now_min,
+        active_now_max,
+        total_paid_current,
+        total_paid_target,
+        total_paid_days_to_complete
+    } = req.body;
+
+    try {
+        const pool = req.app.get('db');
+
+        await pool.query(`
+            UPDATE platform_stats_config 
+            SET 
+                total_users_current = $1,
+                total_users_target = $2,
+                total_users_start_date = CURRENT_TIMESTAMP,
+                total_users_days_to_complete = $3,
+                earned_today_target = $4,
+                earned_today_hours_to_complete = $5,
+                active_now_min = $6,
+                active_now_max = $7,
+                total_paid_current = $8,
+                total_paid_target = $9,
+                total_paid_start_date = CURRENT_TIMESTAMP,
+                total_paid_days_to_complete = $10,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+        `, [
+            total_users_current,
+            total_users_target,
+            total_users_days_to_complete,
+            earned_today_target,
+            earned_today_hours_to_complete,
+            active_now_min,
+            active_now_max,
+            total_paid_current,
+            total_paid_target,
+            total_paid_days_to_complete
+        ]);
+
+        res.json({ success: true, message: 'Platform stats config updated successfully' });
+
+    } catch (error) {
+        console.error('Failed to update config:', error);
+        res.status(500).json({ error: 'Failed to update config' });
+    }
+});
+
+
+
+
+
 module.exports = router;
