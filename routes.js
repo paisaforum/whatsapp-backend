@@ -3,11 +3,10 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
 const router = express.Router();
-
-
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
 
 
 // File upload configuration - Organized by type
@@ -80,8 +79,6 @@ const uploadSubmission = multer({
 
 // Backwards compatibility
 const upload = uploadSubmission;
-
-
 
 
 
@@ -169,7 +166,10 @@ router.post('/login', async (req, res) => {
         }
 
         // Create JWT token
-        const token = jwt.sign({ userId: user.rows[0].id }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({
+            userId: user.rows[0].id,
+            whatsappNumber: whatsappNumber  // ← Add this for consistency
+        }, JWT_SECRET, { expiresIn: '30d' });
 
         res.json({
             userId: user.rows[0].id,
@@ -183,7 +183,7 @@ router.post('/login', async (req, res) => {
 });
 
 // Get user dashboard data (with pagination)
-router.get('/dashboard/:userId', async (req, res) => {
+router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
     const { userId } = req.params;
     const { submissionsPage = 1, redemptionsPage = 1, limit = 5 } = req.query;
 
@@ -309,7 +309,7 @@ router.get('/dashboard/:userId', async (req, res) => {
 });
 
 // Submit proof endpoint
-router.post('/submit-proof', uploadSubmission.array('screenshots', 20), async (req, res) => {
+router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
 
@@ -379,7 +379,7 @@ router.post('/submit-proof', uploadSubmission.array('screenshots', 20), async (r
 
 // Request redemption
 // Request redemption
-router.post('/request-redemption', async (req, res) => {
+router.post('/request-redemption', authenticateUser, async (req, res) => {
     const { userId } = req.body;
 
     if (!userId) {
@@ -476,6 +476,7 @@ router.get('/settings', async (req, res) => {
     }
 });
 
+
 // Admin login
 router.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
@@ -505,7 +506,11 @@ router.post('/admin/login', async (req, res) => {
         }
 
         // Create JWT token
-        const token = jwt.sign({ adminId: admin.rows[0].id }, JWT_SECRET, { expiresIn: '7d' });
+        const token = jwt.sign({
+            adminId: admin.rows[0].id,
+            username: admin.rows[0].username,
+            isAdmin: true  // ← Add this!
+        }, JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
             adminId: admin.rows[0].id,
@@ -519,7 +524,7 @@ router.post('/admin/login', async (req, res) => {
 });
 
 // Get all redemption requests (admin) - with pagination, filters, search
-router.get('/admin/redemptions', async (req, res) => {
+router.get('/admin/redemptions',authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, status = 'all', search = '' } = req.query;
@@ -587,7 +592,7 @@ router.get('/admin/redemptions', async (req, res) => {
 });
 
 // Get user submissions (admin)
-router.get('/admin/user-submissions/:userId', async (req, res) => {
+router.get('/admin/user-submissions/:userId',authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -612,7 +617,7 @@ router.get('/admin/user-submissions/:userId', async (req, res) => {
 });
 
 // Review redemption (admin)
-router.post('/admin/review-redemption', async (req, res) => {
+router.post('/admin/review-redemption',authenticateAdmin, async (req, res) => {
     const { redemptionId, action, giftCode, rejectionReason, adminId } = req.body;
 
     try {
@@ -678,7 +683,7 @@ router.post('/admin/review-redemption', async (req, res) => {
 });
 
 // Get all users (admin) - with pagination and search
-router.get('/admin/users', async (req, res) => {
+router.get('/admin/users',authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, search = '' } = req.query;
@@ -735,7 +740,7 @@ router.get('/admin/users', async (req, res) => {
 
 
 // Add points to user (admin - for testing)
-router.post('/admin/add-points', async (req, res) => {
+router.post('/admin/add-points',authenticateAdmin, async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -761,7 +766,7 @@ router.post('/admin/add-points', async (req, res) => {
 
 
 // Deduct points from user (admin)
-router.post('/admin/deduct-points', async (req, res) => {
+router.post('/admin/deduct-points',authenticateAdmin, async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -802,7 +807,7 @@ router.post('/admin/deduct-points', async (req, res) => {
 });
 
 // Delete user (admin)
-router.delete('/admin/delete-user/:userId', async (req, res) => {
+router.delete('/admin/delete-user/:userId',authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -820,7 +825,7 @@ router.delete('/admin/delete-user/:userId', async (req, res) => {
 
 
 // Cancel submission (user)
-router.post('/cancel-submission', async (req, res) => {
+router.post('/cancel-submission',authenticateUser, async (req, res) => {
     const { submissionId, userId } = req.body;
 
     if (!submissionId || !userId) {
@@ -860,7 +865,7 @@ router.post('/cancel-submission', async (req, res) => {
 
 
 // Get user profile (admin)
-router.get('/admin/user-profile/:userId', async (req, res) => {
+router.get('/admin/user-profile/:userId',authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -891,7 +896,7 @@ router.get('/admin/user-profile/:userId', async (req, res) => {
 
 
 // Delete single submission (admin)
-router.delete('/admin/delete-submission/:submissionId', async (req, res) => {
+router.delete('/admin/delete-submission/:submissionId',authenticateAdmin, async (req, res) => {
     const { submissionId } = req.params;
 
     try {
@@ -923,7 +928,7 @@ router.delete('/admin/delete-submission/:submissionId', async (req, res) => {
 });
 
 // Bulk delete submissions (admin)
-router.post('/admin/bulk-delete-submissions', async (req, res) => {
+router.post('/admin/bulk-delete-submissions',authenticateAdmin, async (req, res) => {
     const { submissionIds } = req.body;
 
     if (!submissionIds || submissionIds.length === 0) {
@@ -958,7 +963,7 @@ router.post('/admin/bulk-delete-submissions', async (req, res) => {
 
 
 // Get all offers (admin)
-router.get('/admin/offers', async (req, res) => {
+router.get('/admin/offers',authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -974,7 +979,7 @@ router.get('/admin/offers', async (req, res) => {
 });
 
 // Create new offer (admin)
-router.post('/admin/create-offer', uploadOffer.single('image'), async (req, res) => {
+router.post('/admin/create-offer',authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
     const { caption } = req.body;
     const image = req.file;
 
@@ -1000,7 +1005,7 @@ router.post('/admin/create-offer', uploadOffer.single('image'), async (req, res)
 });
 
 // Update offer (admin)
-router.put('/admin/update-offer/:offerId', uploadOffer.single('image'), async (req, res) => {
+router.put('/admin/update-offer/:offerId',authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
     const { offerId } = req.params;
     const { caption } = req.body;
     const image = req.file;
@@ -1031,7 +1036,7 @@ router.put('/admin/update-offer/:offerId', uploadOffer.single('image'), async (r
 });
 
 // Set active offer (admin)
-router.post('/admin/set-active-offer', async (req, res) => {
+router.post('/admin/set-active-offer',authenticateAdmin, async (req, res) => {
     const { offerId } = req.body;
 
     try {
@@ -1051,7 +1056,7 @@ router.post('/admin/set-active-offer', async (req, res) => {
 });
 
 // Delete offer (admin)
-router.delete('/admin/delete-offer/:offerId', async (req, res) => {
+router.delete('/admin/delete-offer/:offerId',authenticateAdmin, async (req, res) => {
     const { offerId } = req.params;
 
     try {
@@ -1068,7 +1073,7 @@ router.delete('/admin/delete-offer/:offerId', async (req, res) => {
 
 
 // Get all recipient numbers for a user
-router.get('/user-recipients/:userId', async (req, res) => {
+router.get('/user-recipients/:userId',authenticateUser, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1093,7 +1098,7 @@ router.get('/user-recipients/:userId', async (req, res) => {
 });
 
 // Get system settings (admin)
-router.get('/admin/settings', async (req, res) => {
+router.get('/admin/settings',authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1109,7 +1114,7 @@ router.get('/admin/settings', async (req, res) => {
 });
 
 // Update system setting (admin)
-router.put('/admin/settings/:settingKey', async (req, res) => {
+router.put('/admin/settings/:settingKey',authenticateAdmin, async (req, res) => {
     const { settingKey } = req.params;
     const { value } = req.body;
 
@@ -1131,7 +1136,6 @@ router.put('/admin/settings/:settingKey', async (req, res) => {
         res.status(500).json({ error: 'Failed to update setting' });
     }
 });
-
 
 
 
@@ -1211,7 +1215,7 @@ router.get('/platform-stats', async (req, res) => {
 });
 
 // Get platform stats config (admin only)
-router.get('/admin/platform-stats-config', async (req, res) => {
+router.get('/admin/platform-stats-config',authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const config = await pool.query('SELECT * FROM platform_stats_config WHERE id = 1');
@@ -1228,7 +1232,7 @@ router.get('/admin/platform-stats-config', async (req, res) => {
 });
 
 // Update platform stats config (admin only)
-router.put('/admin/platform-stats-config', async (req, res) => {
+router.put('/admin/platform-stats-config',authenticateAdmin, async (req, res) => {
     const {
         total_users_current,
         total_users_target,
@@ -1284,17 +1288,20 @@ router.put('/admin/platform-stats-config', async (req, res) => {
 });
 
 
+
+
+
 // ============================================
 // MESSAGING SYSTEM ROUTES
 // ============================================
 
 // Get messages for a user (inbox)
-router.get('/messages/:userId', async (req, res) => {
+router.get('/messages/:userId', authenticateUser,async (req, res) => {
     const { userId } = req.params;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Get user-specific messages
         const userMessages = await pool.query(`
             SELECT 
@@ -1308,7 +1315,7 @@ router.get('/messages/:userId', async (req, res) => {
             WHERE user_id = $1 
             ORDER BY created_at DESC
         `, [userId]);
-        
+
         // Get broadcast messages that this user hasn't read yet
         const broadcasts = await pool.query(`
             SELECT 
@@ -1322,13 +1329,13 @@ router.get('/messages/:userId', async (req, res) => {
             LEFT JOIN broadcast_reads br ON bm.id = br.broadcast_id AND br.user_id = $1
             ORDER BY bm.created_at DESC
         `, [userId]);
-        
+
         // Combine and sort by date
         const allMessages = [...userMessages.rows, ...broadcasts.rows]
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        
+
         res.json({ messages: allMessages });
-        
+
     } catch (error) {
         console.error('Failed to get messages:', error);
         res.status(500).json({ error: 'Failed to get messages' });
@@ -1336,18 +1343,18 @@ router.get('/messages/:userId', async (req, res) => {
 });
 
 // Get unread message count for a user
-router.get('/messages/:userId/unread-count', async (req, res) => {
+router.get('/messages/:userId/unread-count', authenticateUser, async (req, res) => {
     const { userId } = req.params;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Count unread user messages
         const userUnread = await pool.query(
             'SELECT COUNT(*) FROM user_messages WHERE user_id = $1 AND is_read = false',
             [userId]
         );
-        
+
         // Count unread broadcasts (broadcasts not in broadcast_reads for this user)
         const broadcastUnread = await pool.query(`
             SELECT COUNT(*) FROM broadcast_messages bm
@@ -1356,11 +1363,11 @@ router.get('/messages/:userId/unread-count', async (req, res) => {
                 WHERE br.broadcast_id = bm.id AND br.user_id = $1
             )
         `, [userId]);
-        
+
         const totalUnread = parseInt(userUnread.rows[0].count) + parseInt(broadcastUnread.rows[0].count);
-        
+
         res.json({ unreadCount: totalUnread });
-        
+
     } catch (error) {
         console.error('Failed to get unread count:', error);
         res.status(500).json({ error: 'Failed to get unread count' });
@@ -1368,13 +1375,13 @@ router.get('/messages/:userId/unread-count', async (req, res) => {
 });
 
 // Mark message as read
-router.put('/messages/:messageId/read', async (req, res) => {
+router.put('/messages/:messageId/read', authenticateUser, async (req, res) => {
     const { messageId } = req.params;
     const { userId, messageType } = req.body;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         if (messageType === 'user') {
             // Mark user message as read
             await pool.query(
@@ -1388,9 +1395,9 @@ router.put('/messages/:messageId/read', async (req, res) => {
                 [userId, messageId]
             );
         }
-        
+
         res.json({ success: true });
-        
+
     } catch (error) {
         console.error('Failed to mark as read:', error);
         res.status(500).json({ error: 'Failed to mark as read' });
@@ -1398,23 +1405,23 @@ router.put('/messages/:messageId/read', async (req, res) => {
 });
 
 // Send message to specific user (admin only)
-router.post('/admin/send-message', async (req, res) => {
+router.post('/admin/send-message', authenticateAdmin, async (req, res) => {
     const { userId, title, message, adminId } = req.body;
-    
+
     if (!userId || !title || !message) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         await pool.query(
             'INSERT INTO user_messages (user_id, title, message, sent_by_admin) VALUES ($1, $2, $3, $4)',
             [userId, title, message, adminId]
         );
-        
+
         res.json({ success: true, message: 'Message sent successfully' });
-        
+
     } catch (error) {
         console.error('Failed to send message:', error);
         res.status(500).json({ error: 'Failed to send message' });
@@ -1422,23 +1429,23 @@ router.post('/admin/send-message', async (req, res) => {
 });
 
 // Broadcast message to all users (admin only)
-router.post('/admin/broadcast-message', async (req, res) => {
+router.post('/admin/broadcast-message', authenticateAdmin, async (req, res) => {
     const { title, message, adminId } = req.body;
-    
+
     if (!title || !message) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         await pool.query(
             'INSERT INTO broadcast_messages (title, message, sent_by_admin) VALUES ($1, $2, $3)',
             [title, message, adminId]
         );
-        
+
         res.json({ success: true, message: 'Broadcast sent successfully' });
-        
+
     } catch (error) {
         console.error('Failed to broadcast message:', error);
         res.status(500).json({ error: 'Failed to broadcast message' });
@@ -1446,10 +1453,10 @@ router.post('/admin/broadcast-message', async (req, res) => {
 });
 
 // Get message history (admin only)
-router.get('/admin/messages-history', async (req, res) => {
+router.get('/admin/messages-history', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Get user messages with user info
         const userMessages = await pool.query(`
             SELECT 
@@ -1465,7 +1472,7 @@ router.get('/admin/messages-history', async (req, res) => {
             ORDER BY um.created_at DESC
             LIMIT 50
         `);
-        
+
         // Get broadcast messages with read count
         const broadcasts = await pool.query(`
             SELECT 
@@ -1482,12 +1489,12 @@ router.get('/admin/messages-history', async (req, res) => {
             ORDER BY bm.created_at DESC
             LIMIT 50
         `);
-        
-        res.json({ 
+
+        res.json({
             userMessages: userMessages.rows,
             broadcasts: broadcasts.rows
         });
-        
+
     } catch (error) {
         console.error('Failed to get message history:', error);
         res.status(500).json({ error: 'Failed to get message history' });
@@ -1501,7 +1508,7 @@ router.get('/admin/messages-history', async (req, res) => {
 // ============================================
 
 // Clear all messages
-router.delete('/admin/clear-all-messages', async (req, res) => {
+router.delete('/admin/clear-all-messages', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1518,7 +1525,7 @@ router.delete('/admin/clear-all-messages', async (req, res) => {
 });
 
 // Clear all submissions (keeps users)
-router.delete('/admin/clear-all-submissions', async (req, res) => {
+router.delete('/admin/clear-all-submissions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1534,7 +1541,7 @@ router.delete('/admin/clear-all-submissions', async (req, res) => {
 });
 
 // Clear all redemptions (keeps users)
-router.delete('/admin/clear-all-redemptions', async (req, res) => {
+router.delete('/admin/clear-all-redemptions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1549,7 +1556,7 @@ router.delete('/admin/clear-all-redemptions', async (req, res) => {
 });
 
 // Clear all user recipients history
-router.delete('/admin/clear-recipients-history', async (req, res) => {
+router.delete('/admin/clear-recipients-history', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1564,7 +1571,7 @@ router.delete('/admin/clear-recipients-history', async (req, res) => {
 });
 
 // Get system statistics for data management
-router.get('/admin/system-stats', async (req, res) => {
+router.get('/admin/system-stats', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1592,12 +1599,12 @@ router.get('/admin/system-stats', async (req, res) => {
 // ============================================
 
 // Get user growth analytics
-router.get('/admin/analytics/user-growth', async (req, res) => {
+router.get('/admin/analytics/user-growth', authenticateAdmin, async (req, res) => {
     const { days = 30 } = req.query;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Get daily user registrations for the last X days
         const result = await pool.query(`
             SELECT 
@@ -1608,9 +1615,9 @@ router.get('/admin/analytics/user-growth', async (req, res) => {
             GROUP BY DATE(created_at)
             ORDER BY date ASC
         `);
-        
+
         res.json({ data: result.rows });
-        
+
     } catch (error) {
         console.error('Failed to get user growth analytics:', error);
         res.status(500).json({ error: 'Failed to get user growth analytics' });
@@ -1618,12 +1625,12 @@ router.get('/admin/analytics/user-growth', async (req, res) => {
 });
 
 // Get points distribution analytics
-router.get('/admin/analytics/points-distribution', async (req, res) => {
+router.get('/admin/analytics/points-distribution', authenticateAdmin, async (req, res) => {
     const { days = 30 } = req.query;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Get daily points awarded for the last X days
         const result = await pool.query(`
             SELECT 
@@ -1636,9 +1643,9 @@ router.get('/admin/analytics/points-distribution', async (req, res) => {
             GROUP BY DATE(created_at)
             ORDER BY date ASC
         `);
-        
+
         res.json({ data: result.rows });
-        
+
     } catch (error) {
         console.error('Failed to get points distribution analytics:', error);
         res.status(500).json({ error: 'Failed to get points distribution analytics' });
@@ -1646,10 +1653,10 @@ router.get('/admin/analytics/points-distribution', async (req, res) => {
 });
 
 // Get redemption status breakdown
-router.get('/admin/analytics/redemption-status', async (req, res) => {
+router.get('/admin/analytics/redemption-status', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Get count by status
         const result = await pool.query(`
             SELECT 
@@ -1659,9 +1666,9 @@ router.get('/admin/analytics/redemption-status', async (req, res) => {
             FROM redemptions
             GROUP BY status
         `);
-        
+
         res.json({ data: result.rows });
-        
+
     } catch (error) {
         console.error('Failed to get redemption status analytics:', error);
         res.status(500).json({ error: 'Failed to get redemption status analytics' });
@@ -1669,12 +1676,12 @@ router.get('/admin/analytics/redemption-status', async (req, res) => {
 });
 
 // Get active users trend
-router.get('/admin/analytics/active-users', async (req, res) => {
+router.get('/admin/analytics/active-users', authenticateAdmin, async (req, res) => {
     const { days = 30 } = req.query;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Get daily active users (users who made submissions that day)
         const result = await pool.query(`
             SELECT 
@@ -1685,9 +1692,9 @@ router.get('/admin/analytics/active-users', async (req, res) => {
             GROUP BY DATE(s.created_at)
             ORDER BY date ASC
         `);
-        
+
         res.json({ data: result.rows });
-        
+
     } catch (error) {
         console.error('Failed to get active users analytics:', error);
         res.status(500).json({ error: 'Failed to get active users analytics' });
@@ -1695,40 +1702,40 @@ router.get('/admin/analytics/active-users', async (req, res) => {
 });
 
 // Get overview statistics for analytics dashboard
-router.get('/admin/analytics/overview', async (req, res) => {
+router.get('/admin/analytics/overview', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Total users
         const totalUsers = await pool.query('SELECT COUNT(*) FROM users');
-        
+
         // Total points distributed (all time)
         const totalPoints = await pool.query('SELECT SUM(points_awarded) FROM submissions WHERE status = \'active\'');
-        
+
         // Total redeemed amount
         const totalRedeemed = await pool.query('SELECT SUM(points_requested) FROM redemptions WHERE status = \'approved\'');
-        
+
         // Active users today
         const activeToday = await pool.query(`
             SELECT COUNT(DISTINCT user_id) 
             FROM submissions 
             WHERE DATE(created_at) = CURRENT_DATE
         `);
-        
+
         // New users this week
         const newUsersWeek = await pool.query(`
             SELECT COUNT(*) 
             FROM users 
             WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
         `);
-        
+
         // Pending redemptions
         const pendingRedemptions = await pool.query(`
             SELECT COUNT(*) 
             FROM redemptions 
             WHERE status = 'pending'
         `);
-        
+
         res.json({
             totalUsers: parseInt(totalUsers.rows[0].count),
             totalPointsDistributed: parseInt(totalPoints.rows[0].sum || 0),
@@ -1737,12 +1744,13 @@ router.get('/admin/analytics/overview', async (req, res) => {
             newUsersThisWeek: parseInt(newUsersWeek.rows[0].count),
             pendingRedemptions: parseInt(pendingRedemptions.rows[0].count)
         });
-        
+
     } catch (error) {
         console.error('Failed to get analytics overview:', error);
         res.status(500).json({ error: 'Failed to get analytics overview' });
     }
 });
+
 
 // ============================================
 // BANNER MANAGEMENT ROUTES
@@ -1766,7 +1774,7 @@ router.get('/banners', async (req, res) => {
 });
 
 // Get all banners (admin)
-router.get('/admin/banners', async (req, res) => {
+router.get('/admin/banners', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const banners = await pool.query(`
@@ -1781,22 +1789,22 @@ router.get('/admin/banners', async (req, res) => {
 });
 
 // Create banner (admin)
-router.post('/admin/create-banner', uploadBanner.single('image'), async (req, res) => {
+router.post('/admin/create-banner',authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
     const { title, link_url, display_order } = req.body;
-    
+
     if (!req.file) {
         return res.status(400).json({ error: 'Image is required' });
     }
-    
+
     try {
         const pool = req.app.get('db');
         const imagePath = '/uploads/banners/' + req.file.filename;
-        
+
         await pool.query(
             'INSERT INTO banners (image_url, title, link_url, display_order) VALUES ($1, $2, $3, $4)',
             [imagePath, title || null, link_url || null, display_order || 0]
         );
-        
+
         res.json({ success: true, message: 'Banner created successfully' });
     } catch (error) {
         console.error('Failed to create banner:', error);
@@ -1805,13 +1813,13 @@ router.post('/admin/create-banner', uploadBanner.single('image'), async (req, re
 });
 
 // Update banner (admin)
-router.put('/admin/update-banner/:id', uploadBanner.single('image'), async (req, res) => {
+router.put('/admin/update-banner/:id',authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
     const { id } = req.params;
     const { title, link_url, display_order } = req.body;
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         if (req.file) {
             const imagePath = '/uploads/banners/' + req.file.filename;
             await pool.query(
@@ -1824,7 +1832,7 @@ router.put('/admin/update-banner/:id', uploadBanner.single('image'), async (req,
                 [title || null, link_url || null, display_order || 0, id]
             );
         }
-        
+
         res.json({ success: true, message: 'Banner updated successfully' });
     } catch (error) {
         console.error('Failed to update banner:', error);
@@ -1833,9 +1841,9 @@ router.put('/admin/update-banner/:id', uploadBanner.single('image'), async (req,
 });
 
 // Toggle banner status (admin)
-router.post('/admin/toggle-banner/:id', async (req, res) => {
+router.post('/admin/toggle-banner/:id', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
-    
+
     try {
         const pool = req.app.get('db');
         await pool.query(
@@ -1850,9 +1858,9 @@ router.post('/admin/toggle-banner/:id', async (req, res) => {
 });
 
 // Delete banner (admin)
-router.delete('/admin/delete-banner/:id', async (req, res) => {
+router.delete('/admin/delete-banner/:id', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
-    
+
     try {
         const pool = req.app.get('db');
         await pool.query('DELETE FROM banners WHERE id = $1', [id]);
@@ -1862,4 +1870,6 @@ router.delete('/admin/delete-banner/:id', async (req, res) => {
         res.status(500).json({ error: 'Failed to delete banner' });
     }
 });
+
+
 module.exports = router;
