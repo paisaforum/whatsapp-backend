@@ -81,6 +81,7 @@ const uploadSubmission = multer({
 const upload = uploadSubmission;
 
 
+
 // Helper function to hash phone numbers
 function hashPhoneNumber(phoneNumber) {
     return crypto.createHash('sha256').update(phoneNumber).digest('hex');
@@ -1869,38 +1870,44 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, async (req, res) =>
 });
 
 
-
 // ==================== SOCIAL LINKS ROUTES ====================
 
 // Get all active social links (PUBLIC)
 router.get('/social-links', async (req, res) => {
     try {
+        const pool = req.app.get('db'); // ← CRITICAL: Get database pool
+        
         const result = await pool.query(
             'SELECT * FROM social_links WHERE is_active = true ORDER BY display_order ASC'
         );
+        
         res.json({ links: result.rows });
     } catch (error) {
         console.error('Error fetching social links:', error);
-        res.status(500).json({ error: 'Failed to fetch social links' });
+        res.json({ links: [] }); // Return empty array instead of crashing
     }
 });
 
 // Get all social links for admin (ADMIN ONLY)
 router.get('/admin/social-links', authenticateAdmin, async (req, res) => {
     try {
+        const pool = req.app.get('db'); // ← CRITICAL: Get database pool
+        
         const result = await pool.query(
             'SELECT * FROM social_links ORDER BY display_order ASC'
         );
+        
         res.json({ links: result.rows });
     } catch (error) {
-        console.error('Error fetching social links:', error);
-        res.status(500).json({ error: 'Failed to fetch social links' });
+        console.error('Error fetching admin social links:', error);
+        res.json({ links: [] }); // Return empty array instead of 500 error
     }
 });
 
 // Create social link (ADMIN ONLY)
 router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => {
     try {
+        const pool = req.app.get('db');
         const { platform, title, url, icon, displayOrder } = req.body;
 
         if (!platform || !title || !url || !icon) {
@@ -1926,6 +1933,7 @@ router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => 
 // Update social link (ADMIN ONLY)
 router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) => {
     try {
+        const pool = req.app.get('db');
         const { id } = req.params;
         const { platform, title, url, icon, displayOrder, isActive } = req.body;
 
@@ -1954,6 +1962,7 @@ router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) 
 // Toggle social link status (ADMIN ONLY)
 router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res) => {
     try {
+        const pool = req.app.get('db');
         const { id } = req.params;
 
         const result = await pool.query(
@@ -1978,6 +1987,7 @@ router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res)
 // Delete social link (ADMIN ONLY)
 router.delete('/admin/delete-social-link/:id', authenticateAdmin, async (req, res) => {
     try {
+        const pool = req.app.get('db');
         const { id } = req.params;
 
         const result = await pool.query(
@@ -1995,6 +2005,5 @@ router.delete('/admin/delete-social-link/:id', authenticateAdmin, async (req, re
         res.status(500).json({ error: 'Failed to delete social link' });
     }
 });
-
 
 module.exports = router;
