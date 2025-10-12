@@ -521,6 +521,382 @@ router.post('/admin/login', async (req, res) => {
     }
 });
 
+
+
+// ==================== ADMIN MANAGEMENT ROUTES ====================
+
+// Change admin password (ANY ADMIN)
+router.post('/admin/change-password', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { oldPassword, newPassword } = req.body;
+        const adminId = req.admin.adminId;
+
+        if (!oldPassword || !newPassword) {
+            return res.status(400).json({ error: 'Old and new passwords required' });
+        }
+
+        if (newPassword.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
+        }
+
+        // Get current password hash
+        const admin = await pool.query(
+            'SELECT password_hash FROM admins WHERE id = $1',
+            [adminId]
+        );
+
+        if (admin.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        // Verify old password
+        const validPassword = await bcrypt.compare(oldPassword, admin.rows[0].password_hash);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Current password is incorrect' });
+        }
+
+        // Hash new password
+        const newHash = await bcrypt.hash(newPassword, 10);
+
+        // Update password
+        await pool.query(
+            'UPDATE admins SET password_hash = $1 WHERE id = $2',
+            [newHash, adminId]
+        );
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
+             VALUES ($1, $2, 'PASSWORD_CHANGED', 'Admin changed their password')`,
+            [adminId, req.admin.username]
+        );
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        console.error('Error changing password:', error);
+        res.status(500).json({ error: 'Failed to change password' });
+    }
+});
+
+// Get all admins (SUPER ADMIN ONLY)
+router.get('/admin/admins', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied. Super admin only.' });
+        }
+
+        const result = await pool.query(`
+            SELECT id, username, role, two_fa_enabled, is_active, 
+                   last_login, created_at, created_by
+            FROM admins 
+            ORDER BY created_at DESC
+        `);
+
+        res.json({ admins: result.rows });
+    } catch (error) {
+        console.error('Error fetching admins:', error);
+        res.status(500).json({ error: 'Failed to fetch admins' });
+    }
+});
+
+// Get admin permissions (SUPER ADMIN ONLY)
+router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const result = await pool.query(
+            'SELECT permission FROM admin_permissions WHERE admin_id = $1',
+            [id]
+        );
+
+        const permissions = result.rows.map(row => row.permission);
+        res.json({ permissions });
+    } catch (error) {
+        console.error('Error fetching permissions:', error);
+        res.status(500).json({ error: 'Failed to fetch permissions' });
+    }
+});
+
+// Create new admin (SUPER ADMIN ONLY)
+router.post('/admin/create-admin', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { username, password, permissions } = req.body;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password required' });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
+        }
+
+        // Check if username exists
+        const existingAdmin = await pool.query(
+            'SELECT id FROM admins WHERE username = $1',
+            [username]
+        );
+
+        if (existingAdmin.rows.length > 0) {
+            return res.status(400).json({ error: 'Username already exists' });
+        }
+
+        // Hash password
+        const passwordHash = await bcrypt.hash(password, 10);
+
+        // Create admin
+        const result = await pool.query(
+            `INSERT INTO admins (username, password_hash, role, created_by, is_active) 
+             VALUES ($1, $2, 'admin', $3, true) RETURNING id, username, role`,
+            [username, passwordHash, req.admin.adminId]
+        );
+
+        const newAdminId = result.rows[0].id;
+
+        // Add permissions
+        if (permissions && Array.isArray(permissions)) {
+            for (const permission of permissions) {
+                await pool.query(
+                    'INSERT INTO admin_permissions (admin_id, permission) VALUES ($1, $2)',
+                    [newAdminId, permission]
+                );
+            }
+        }
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
+             VALUES ($1, $2, 'ADMIN_CREATED', $3)`,
+            [req.admin.adminId, req.admin.username, `Created admin: ${username}`]
+        );
+
+        res.json({ 
+            message: 'Admin created successfully',
+            admin: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error creating admin:', error);
+        res.status(500).json({ error: 'Failed to create admin' });
+    }
+});
+
+// Update admin permissions (SUPER ADMIN ONLY)
+router.put('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { permissions } = req.body;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        // Cannot edit super admin permissions
+        const targetAdmin = await pool.query(
+            'SELECT role, username FROM admins WHERE id = $1',
+            [id]
+        );
+
+        if (targetAdmin.rows[0].role === 'super_admin') {
+            return res.status(400).json({ error: 'Cannot modify super admin permissions' });
+        }
+
+        // Delete existing permissions
+        await pool.query('DELETE FROM admin_permissions WHERE admin_id = $1', [id]);
+
+        // Add new permissions
+        if (permissions && Array.isArray(permissions)) {
+            for (const permission of permissions) {
+                await pool.query(
+                    'INSERT INTO admin_permissions (admin_id, permission) VALUES ($1, $2)',
+                    [id, permission]
+                );
+            }
+        }
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
+             VALUES ($1, $2, 'PERMISSIONS_UPDATED', $3)`,
+            [req.admin.adminId, req.admin.username, `Updated permissions for admin ID: ${id}`]
+        );
+
+        res.json({ message: 'Permissions updated successfully' });
+    } catch (error) {
+        console.error('Error updating permissions:', error);
+        res.status(500).json({ error: 'Failed to update permissions' });
+    }
+});
+
+// Delete admin (SUPER ADMIN ONLY)
+router.delete('/admin/admins/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        // Cannot delete super admin or self
+        if (parseInt(id) === req.admin.adminId) {
+            return res.status(400).json({ error: 'Cannot delete yourself' });
+        }
+
+        const targetAdmin = await pool.query(
+            'SELECT role, username FROM admins WHERE id = $1',
+            [id]
+        );
+
+        if (targetAdmin.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        if (targetAdmin.rows[0].role === 'super_admin') {
+            return res.status(400).json({ error: 'Cannot delete super admin' });
+        }
+
+        // Delete admin (permissions will cascade delete)
+        await pool.query('DELETE FROM admins WHERE id = $1', [id]);
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
+             VALUES ($1, $2, 'ADMIN_DELETED', $3)`,
+            [req.admin.adminId, req.admin.username, `Deleted admin: ${targetAdmin.rows[0].username}`]
+        );
+
+        res.json({ message: 'Admin deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting admin:', error);
+        res.status(500).json({ error: 'Failed to delete admin' });
+    }
+});
+
+// Toggle admin active status (SUPER ADMIN ONLY)
+router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const result = await pool.query(
+            `UPDATE admins SET is_active = NOT is_active 
+             WHERE id = $1 AND role != 'super_admin' 
+             RETURNING username, is_active`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ error: 'Cannot modify this admin' });
+        }
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
+             VALUES ($1, $2, 'STATUS_CHANGED', $3)`,
+            [req.admin.adminId, req.admin.username, 
+             `Changed status for ${result.rows[0].username} to ${result.rows[0].is_active ? 'active' : 'inactive'}`]
+        );
+
+        res.json({ 
+            message: 'Status updated',
+            isActive: result.rows[0].is_active
+        });
+    } catch (error) {
+        console.error('Error toggling status:', error);
+        res.status(500).json({ error: 'Failed to toggle status' });
+    }
+});
+
+// Get activity logs (SUPER ADMIN ONLY)
+router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { adminId, limit = 50, offset = 0 } = req.query;
+
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        let query = `
+            SELECT * FROM admin_activity_logs
+            ${adminId ? 'WHERE admin_id = $1' : ''}
+            ORDER BY created_at DESC
+            LIMIT $${adminId ? '2' : '1'} OFFSET $${adminId ? '3' : '2'}
+        `;
+
+        const params = adminId 
+            ? [adminId, limit, offset]
+            : [limit, offset];
+
+        const result = await pool.query(query, params);
+
+        res.json({ logs: result.rows });
+    } catch (error) {
+        console.error('Error fetching logs:', error);
+        res.status(500).json({ error: 'Failed to fetch logs' });
+    }
+});
+
+
 // Get all redemption requests (admin) - with pagination, filters, search
 router.get('/admin/redemptions',authenticateAdmin, async (req, res) => {
     try {
