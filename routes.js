@@ -1869,4 +1869,132 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, async (req, res) =>
 });
 
 
+
+// ==================== SOCIAL LINKS ROUTES ====================
+
+// Get all active social links (PUBLIC)
+router.get('/social-links', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM social_links WHERE is_active = true ORDER BY display_order ASC'
+        );
+        res.json({ links: result.rows });
+    } catch (error) {
+        console.error('Error fetching social links:', error);
+        res.status(500).json({ error: 'Failed to fetch social links' });
+    }
+});
+
+// Get all social links for admin (ADMIN ONLY)
+router.get('/admin/social-links', authenticateAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM social_links ORDER BY display_order ASC'
+        );
+        res.json({ links: result.rows });
+    } catch (error) {
+        console.error('Error fetching social links:', error);
+        res.status(500).json({ error: 'Failed to fetch social links' });
+    }
+});
+
+// Create social link (ADMIN ONLY)
+router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => {
+    try {
+        const { platform, title, url, icon, displayOrder } = req.body;
+
+        if (!platform || !title || !url || !icon) {
+            return res.status(400).json({ error: 'All fields required' });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO social_links (platform, title, url, icon, display_order) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [platform, title, url, icon, displayOrder || 0]
+        );
+
+        res.json({ 
+            message: 'Social link created successfully',
+            link: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error creating social link:', error);
+        res.status(500).json({ error: 'Failed to create social link' });
+    }
+});
+
+// Update social link (ADMIN ONLY)
+router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { platform, title, url, icon, displayOrder, isActive } = req.body;
+
+        const result = await pool.query(
+            `UPDATE social_links 
+             SET platform = $1, title = $2, url = $3, icon = $4, 
+                 display_order = $5, is_active = $6 
+             WHERE id = $7 RETURNING *`,
+            [platform, title, url, icon, displayOrder, isActive, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        res.json({ 
+            message: 'Social link updated successfully',
+            link: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error updating social link:', error);
+        res.status(500).json({ error: 'Failed to update social link' });
+    }
+});
+
+// Toggle social link status (ADMIN ONLY)
+router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `UPDATE social_links SET is_active = NOT is_active WHERE id = $1 RETURNING *`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        res.json({ 
+            message: 'Status toggled successfully',
+            link: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error toggling social link:', error);
+        res.status(500).json({ error: 'Failed to toggle social link' });
+    }
+});
+
+// Delete social link (ADMIN ONLY)
+router.delete('/admin/delete-social-link/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            'DELETE FROM social_links WHERE id = $1 RETURNING *',
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        res.json({ message: 'Social link deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting social link:', error);
+        res.status(500).json({ error: 'Failed to delete social link' });
+    }
+});
+
+
 module.exports = router;
