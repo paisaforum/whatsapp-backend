@@ -81,9 +81,6 @@ const uploadSubmission = multer({
 const upload = uploadSubmission;
 
 
-
-const JWT_SECRET = 'your-secret-key-change-this-in-production'; // In production, use environment variable
-
 // Helper function to hash phone numbers
 function hashPhoneNumber(phoneNumber) {
     return crypto.createHash('sha256').update(phoneNumber).digest('hex');
