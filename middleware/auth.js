@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 
-// JWT Secret - will be moved to environment variable later
+// JWT Secret - from environment variable
 const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-change-in-production-1234567890abcdef';
 
 // Middleware to verify user token
@@ -59,9 +59,13 @@ const authenticateAdmin = (req, res, next) => {
             return res.status(403).json({ error: 'Admin access required' });
         }
         
-        // Attach adminId to request object
-        req.adminId = decoded.adminId;
-        req.username = decoded.username;
+        // ⬇️ FIX: Attach admin object to request (not individual properties)
+        req.admin = {
+            adminId: decoded.adminId,
+            username: decoded.username,
+            role: decoded.role || 'admin',  // ← ADD: Include role from token
+            isAdmin: decoded.isAdmin
+        };
         
         next();
         
