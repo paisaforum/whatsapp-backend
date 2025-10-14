@@ -8,6 +8,35 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
 
+// Permission checking middleware
+const checkPermission = (requiredPermission) => {
+    return async (req, res, next) => {
+        try {
+            // Super admin has all permissions
+            if (req.admin.role === 'super_admin') {
+                return next();
+            }
+
+            // Check if admin has the required permission
+            const result = await pool.query(
+                'SELECT permission_id FROM admin_permissions WHERE admin_id = $1',
+                [req.admin.id]
+            );
+
+            const permissions = result.rows.map(row => row.permission_id);
+
+            if (!permissions.includes(requiredPermission)) {
+                return res.status(403).json({ error: 'Access denied. Insufficient permissions.' });
+            }
+
+            next();
+        } catch (error) {
+            console.error('Permission check error:', error);
+            res.status(500).json({ error: 'Permission check failed' });
+        }
+    };
+};
+
 
 // File upload configuration - Organized by type
 const uploadsDir = './uploads';
@@ -515,18 +544,30 @@ router.post('/admin/login', async (req, res) => {
             [admin.rows[0].id]
         );
 
+        // ⬇️ ADD THIS SECTION - Fetch permissions ⬇️
+        let permissions = [];
+        if (admin.rows[0].role !== 'super_admin') {
+            const permResult = await pool.query(
+                'SELECT permission_id FROM admin_permissions WHERE admin_id = $1',
+                [admin.rows[0].id]
+            );
+            permissions = permResult.rows.map(row => row.permission_id);
+        }
+        // ⬆️ END NEW SECTION ⬆️
+
         // Create JWT token with role
         const token = jwt.sign({
             adminId: admin.rows[0].id,
             username: admin.rows[0].username,
-            role: admin.rows[0].role,  // ← ADD THIS
+            role: admin.rows[0].role,
             isAdmin: true
         }, JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
             adminId: admin.rows[0].id,
             token: token,
-            role: admin.rows[0].role,  // ← ADD THIS
+            role: admin.rows[0].role,
+            permissions: permissions,  // ⬅️ ADD THIS LINE
             message: 'Login successful!'
         });
     } catch (error) {
@@ -534,6 +575,8 @@ router.post('/admin/login', async (req, res) => {
         res.status(500).json({ error: 'Login failed' });
     }
 });
+
+
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
 
@@ -912,7 +955,7 @@ router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
 
 
 // Get all redemption requests (admin) - with pagination, filters, search
-router.get('/admin/redemptions', authenticateAdmin, async (req, res) => {
+router.get('/admin/redemptions', authenticateAdmin, checkPermission('view_redemptions'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, status = 'all', search = '' } = req.query;
@@ -980,7 +1023,7 @@ router.get('/admin/redemptions', authenticateAdmin, async (req, res) => {
 });
 
 // Get user submissions (admin)
-router.get('/admin/user-submissions/:userId', authenticateAdmin, async (req, res) => {
+router.get('/admin/user-submissions/:userId', authenticateAdmin, checkPermission('view_submissions'), async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1005,7 +1048,7 @@ router.get('/admin/user-submissions/:userId', authenticateAdmin, async (req, res
 });
 
 // Review redemption (admin)
-router.post('/admin/review-redemption', authenticateAdmin, async (req, res) => {
+router.post('/admin/review-redemption', authenticateAdmin, checkPermission('manage_redemptions'), async (req, res) => {
     const { redemptionId, action, giftCode, rejectionReason, adminId } = req.body;
 
     try {
@@ -1071,7 +1114,7 @@ router.post('/admin/review-redemption', authenticateAdmin, async (req, res) => {
 });
 
 // Get all users (admin) - with pagination and search
-router.get('/admin/users', authenticateAdmin, async (req, res) => {
+router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, search = '' } = req.query;
@@ -1128,7 +1171,7 @@ router.get('/admin/users', authenticateAdmin, async (req, res) => {
 
 
 // Add points to user (admin - for testing)
-router.post('/admin/add-points', authenticateAdmin, async (req, res) => {
+router.post('/admin/add-points', authenticateAdmin, checkPermission('manage_users'), async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -1154,7 +1197,7 @@ router.post('/admin/add-points', authenticateAdmin, async (req, res) => {
 
 
 // Deduct points from user (admin)
-router.post('/admin/deduct-points', authenticateAdmin, async (req, res) => {
+router.post('/admin/deduct-points', authenticateAdmin, checkPermission('manage_users'), async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -1195,7 +1238,7 @@ router.post('/admin/deduct-points', authenticateAdmin, async (req, res) => {
 });
 
 // Delete user (admin)
-router.delete('/admin/delete-user/:userId', authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-user/:userId', authenticateAdmin, checkPermission('manage_users'), async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1253,7 +1296,7 @@ router.post('/cancel-submission', authenticateUser, async (req, res) => {
 
 
 // Get user profile (admin)
-router.get('/admin/user-profile/:userId', authenticateAdmin, async (req, res) => {
+router.get('/admin/user-profile/:userId', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1284,7 +1327,7 @@ router.get('/admin/user-profile/:userId', authenticateAdmin, async (req, res) =>
 
 
 // Delete single submission (admin)
-router.delete('/admin/delete-submission/:submissionId', authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-submission/:submissionId', authenticateAdmin, checkPermission('approve_submissions'), async (req, res) => {
     const { submissionId } = req.params;
 
     try {
@@ -1316,7 +1359,7 @@ router.delete('/admin/delete-submission/:submissionId', authenticateAdmin, async
 });
 
 // Bulk delete submissions (admin)
-router.post('/admin/bulk-delete-submissions', authenticateAdmin, async (req, res) => {
+router.post('/admin/bulk-delete-submissions', authenticateAdmin, checkPermission('approve_submissions'), async (req, res) => {
     const { submissionIds } = req.body;
 
     if (!submissionIds || submissionIds.length === 0) {
@@ -1351,7 +1394,7 @@ router.post('/admin/bulk-delete-submissions', authenticateAdmin, async (req, res
 
 
 // Get all offers (admin)
-router.get('/admin/offers', authenticateAdmin, async (req, res) => {
+router.get('/admin/offers', authenticateAdmin, checkPermission('manage_offers'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1367,7 +1410,7 @@ router.get('/admin/offers', authenticateAdmin, async (req, res) => {
 });
 
 // Create new offer (admin)
-router.post('/admin/create-offer', authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
+router.post('/admin/create-offer', authenticateAdmin, checkPermission('manage_offers'), uploadOffer.single('image'), async (req, res) => {
     const { caption } = req.body;
     const image = req.file;
 
@@ -1393,7 +1436,7 @@ router.post('/admin/create-offer', authenticateAdmin, uploadOffer.single('image'
 });
 
 // Update offer (admin)
-router.put('/admin/update-offer/:offerId', authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
+router.put('/admin/update-offer/:offerId', authenticateAdmin, checkPermission('manage_offers'), uploadOffer.single('image'), async (req, res) => {
     const { offerId } = req.params;
     const { caption } = req.body;
     const image = req.file;
@@ -1424,7 +1467,7 @@ router.put('/admin/update-offer/:offerId', authenticateAdmin, uploadOffer.single
 });
 
 // Set active offer (admin)
-router.post('/admin/set-active-offer', authenticateAdmin, async (req, res) => {
+router.post('/admin/set-active-offer', authenticateAdmin, checkPermission('manage_offers'), async (req, res) => {
     const { offerId } = req.body;
 
     try {
@@ -1444,7 +1487,7 @@ router.post('/admin/set-active-offer', authenticateAdmin, async (req, res) => {
 });
 
 // Delete offer (admin)
-router.delete('/admin/delete-offer/:offerId', authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-offer/:offerId', authenticateAdmin, checkPermission('manage_offers'), async (req, res) => {
     const { offerId } = req.params;
 
     try {
@@ -1486,7 +1529,7 @@ router.get('/user-recipients/:userId', authenticateUser, async (req, res) => {
 });
 
 // Get system settings (admin)
-router.get('/admin/settings', authenticateAdmin, async (req, res) => {
+router.get('/admin/settings', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1502,7 +1545,7 @@ router.get('/admin/settings', authenticateAdmin, async (req, res) => {
 });
 
 // Update system setting (admin)
-router.put('/admin/settings/:settingKey', authenticateAdmin, async (req, res) => {
+router.put('/admin/settings/:settingKey', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const { settingKey } = req.params;
     const { value } = req.body;
 
@@ -1603,7 +1646,7 @@ router.get('/platform-stats', async (req, res) => {
 });
 
 // Get platform stats config (admin only)
-router.get('/admin/platform-stats-config', authenticateAdmin, async (req, res) => {
+router.get('/admin/platform-stats-config', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const config = await pool.query('SELECT * FROM platform_stats_config WHERE id = 1');
@@ -1620,7 +1663,7 @@ router.get('/admin/platform-stats-config', authenticateAdmin, async (req, res) =
 });
 
 // Update platform stats config (admin only)
-router.put('/admin/platform-stats-config', authenticateAdmin, async (req, res) => {
+router.put('/admin/platform-stats-config', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const {
         total_users_current,
         total_users_target,
@@ -1793,7 +1836,7 @@ router.put('/messages/:messageId/read', authenticateUser, async (req, res) => {
 });
 
 // Send message to specific user (admin only)
-router.post('/admin/send-message', authenticateAdmin, async (req, res) => {
+router.post('/admin/send-message', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
     const { userId, title, message, adminId } = req.body;
 
     if (!userId || !title || !message) {
@@ -1817,7 +1860,7 @@ router.post('/admin/send-message', authenticateAdmin, async (req, res) => {
 });
 
 // Broadcast message to all users (admin only)
-router.post('/admin/broadcast-message', authenticateAdmin, async (req, res) => {
+router.post('/admin/broadcast-message', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
     const { title, message, adminId } = req.body;
 
     if (!title || !message) {
@@ -1841,7 +1884,7 @@ router.post('/admin/broadcast-message', authenticateAdmin, async (req, res) => {
 });
 
 // Get message history (admin only)
-router.get('/admin/messages-history', authenticateAdmin, async (req, res) => {
+router.get('/admin/messages-history', authenticateAdmin, checkPermission('view_messages'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1896,7 +1939,7 @@ router.get('/admin/messages-history', authenticateAdmin, async (req, res) => {
 // ============================================
 
 // Clear all messages
-router.delete('/admin/clear-all-messages', authenticateAdmin, async (req, res) => {
+router.delete('/admin/clear-all-messages', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1913,7 +1956,7 @@ router.delete('/admin/clear-all-messages', authenticateAdmin, async (req, res) =
 });
 
 // Clear all submissions (keeps users)
-router.delete('/admin/clear-all-submissions', authenticateAdmin, async (req, res) => {
+router.delete('/admin/clear-all-submissions', authenticateAdmin, checkPermission('approve_submissions'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1929,7 +1972,7 @@ router.delete('/admin/clear-all-submissions', authenticateAdmin, async (req, res
 });
 
 // Clear all redemptions (keeps users)
-router.delete('/admin/clear-all-redemptions', authenticateAdmin, async (req, res) => {
+router.delete('/admin/clear-all-redemptions', authenticateAdmin, checkPermission('manage_redemptions'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1944,7 +1987,7 @@ router.delete('/admin/clear-all-redemptions', authenticateAdmin, async (req, res
 });
 
 // Clear all user recipients history
-router.delete('/admin/clear-recipients-history', authenticateAdmin, async (req, res) => {
+router.delete('/admin/clear-recipients-history', authenticateAdmin, checkPermission('approve_submissions'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1959,7 +2002,7 @@ router.delete('/admin/clear-recipients-history', authenticateAdmin, async (req, 
 });
 
 // Get system statistics for data management
-router.get('/admin/system-stats', authenticateAdmin, async (req, res) => {
+router.get('/admin/system-stats', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1987,7 +2030,7 @@ router.get('/admin/system-stats', authenticateAdmin, async (req, res) => {
 // ============================================
 
 // Get user growth analytics
-router.get('/admin/analytics/user-growth', authenticateAdmin, async (req, res) => {
+router.get('/admin/analytics/user-growth', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const { days = 30 } = req.query;
 
     try {
@@ -2013,7 +2056,7 @@ router.get('/admin/analytics/user-growth', authenticateAdmin, async (req, res) =
 });
 
 // Get points distribution analytics
-router.get('/admin/analytics/points-distribution', authenticateAdmin, async (req, res) => {
+router.get('/admin/analytics/points-distribution', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const { days = 30 } = req.query;
 
     try {
@@ -2041,7 +2084,7 @@ router.get('/admin/analytics/points-distribution', authenticateAdmin, async (req
 });
 
 // Get redemption status breakdown
-router.get('/admin/analytics/redemption-status', authenticateAdmin, async (req, res) => {
+router.get('/admin/analytics/redemption-status', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -2064,7 +2107,7 @@ router.get('/admin/analytics/redemption-status', authenticateAdmin, async (req, 
 });
 
 // Get active users trend
-router.get('/admin/analytics/active-users', authenticateAdmin, async (req, res) => {
+router.get('/admin/analytics/active-users', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const { days = 30 } = req.query;
 
     try {
@@ -2090,7 +2133,7 @@ router.get('/admin/analytics/active-users', authenticateAdmin, async (req, res) 
 });
 
 // Get overview statistics for analytics dashboard
-router.get('/admin/analytics/overview', authenticateAdmin, async (req, res) => {
+router.get('/admin/analytics/overview', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -2162,7 +2205,7 @@ router.get('/banners', async (req, res) => {
 });
 
 // Get all banners (admin)
-router.get('/admin/banners', authenticateAdmin, async (req, res) => {
+router.get('/admin/banners', authenticateAdmin, checkPermission('manage_banners'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const banners = await pool.query(`
@@ -2177,7 +2220,7 @@ router.get('/admin/banners', authenticateAdmin, async (req, res) => {
 });
 
 // Create banner (admin)
-router.post('/admin/create-banner', authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
+router.post('/admin/create-banner', authenticateAdmin, checkPermission('manage_banners'), uploadBanner.single('image'), async (req, res) => {
     const { title, link_url, display_order } = req.body;
 
     if (!req.file) {
@@ -2201,7 +2244,7 @@ router.post('/admin/create-banner', authenticateAdmin, uploadBanner.single('imag
 });
 
 // Update banner (admin)
-router.put('/admin/update-banner/:id', authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
+router.put('/admin/update-banner/:id', authenticateAdmin, checkPermission('manage_banners'), uploadBanner.single('image'), async (req, res) => {
     const { id } = req.params;
     const { title, link_url, display_order } = req.body;
 
@@ -2229,7 +2272,7 @@ router.put('/admin/update-banner/:id', authenticateAdmin, uploadBanner.single('i
 });
 
 // Toggle banner status (admin)
-router.post('/admin/toggle-banner/:id', authenticateAdmin, async (req, res) => {
+router.post('/admin/toggle-banner/:id', authenticateAdmin, checkPermission('manage_banners'), async (req, res) => {
     const { id } = req.params;
 
     try {
@@ -2246,7 +2289,7 @@ router.post('/admin/toggle-banner/:id', authenticateAdmin, async (req, res) => {
 });
 
 // Delete banner (admin)
-router.delete('/admin/delete-banner/:id', authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-banner/:id', authenticateAdmin, checkPermission('manage_banners'), async (req, res) => {
     const { id } = req.params;
 
     try {
@@ -2279,7 +2322,7 @@ router.get('/social-links', async (req, res) => {
 });
 
 // Get all social links for admin (ADMIN ONLY)
-router.get('/admin/social-links', authenticateAdmin, async (req, res) => {
+router.get('/admin/social-links', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db'); // ← CRITICAL: Get database pool
 
@@ -2295,7 +2338,7 @@ router.get('/admin/social-links', authenticateAdmin, async (req, res) => {
 });
 
 // Create social link (ADMIN ONLY)
-router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => {
+router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { platform, title, url, icon, displayOrder } = req.body;
@@ -2321,7 +2364,7 @@ router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => 
 });
 
 // Update social link (ADMIN ONLY)
-router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) => {
+router.put('/admin/update-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
@@ -2350,7 +2393,7 @@ router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) 
 });
 
 // Toggle social link status (ADMIN ONLY)
-router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res) => {
+router.post('/admin/toggle-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
@@ -2375,7 +2418,7 @@ router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res)
 });
 
 // Delete social link (ADMIN ONLY)
-router.delete('/admin/delete-social-link/:id', authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
