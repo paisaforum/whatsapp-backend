@@ -39,6 +39,21 @@ const checkPermission = (requiredPermission) => {
         }
     };
 };
+
+// Activity logging helper
+const logAdminActivity = async (pool, adminId, action, details) => {
+    try {
+        await pool.query(
+            'INSERT INTO admin_activity_logs (admin_id, action, details) VALUES ($1, $2, $3)',
+            [adminId, action, details]
+        );
+    } catch (error) {
+        console.error('Failed to log activity:', error);
+        // Don't throw - logging failure shouldn't break the main action
+    }
+};
+
+
 // File upload configuration - Organized by type
 const uploadsDir = './uploads';
 const bannersDir = './uploads/banners';
@@ -628,6 +643,9 @@ router.post('/admin/change-password', authenticateAdmin, async (req, res) => {
             [adminId, req.admin.username]
         );
 
+
+        await logAdminActivity(pool, req.admin.adminId, 'change_password', `Changed own password`);
+
         res.json({ message: 'Password changed successfully' });
     } catch (error) {
         console.error('Error changing password:', error);
@@ -685,7 +703,14 @@ router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) 
             [id]
         );
 
-         const permissions = result.rows.map(row => row.permission); 
+        const permissions = result.rows.map(row => row.permission);
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_admin_permissions', `Updated permissions for admin ID ${adminId}`);
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_admin_permissions', `Updated permissions for admin ID ${adminId}`);
+
+        await logAdminActivity(pool, req.admin.adminId, 'delete_admin', `Deleted admin ID ${adminId}`);
+
         res.json({ permissions });
     } catch (error) {
         console.error('Error fetching permissions:', error);
@@ -755,6 +780,8 @@ router.post('/admin/create-admin', authenticateAdmin, async (req, res) => {
              VALUES ($1, $2, 'ADMIN_CREATED', $3)`,
             [req.admin.adminId, req.admin.username, `Created admin: ${username}`]
         );
+
+        await logAdminActivity(pool, req.admin.adminId, 'create_admin', `Created new admin: ${username} with ${permissions.length} permissions`);
 
         res.json({
             message: 'Admin created successfully',
@@ -905,6 +932,8 @@ router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, re
             [req.admin.adminId, req.admin.username,
             `Changed status for ${result.rows[0].username} to ${result.rows[0].is_active ? 'active' : 'inactive'}`]
         );
+
+        await logAdminActivity(pool, req.admin.adminId, 'toggle_admin_status', `Toggled status for admin ID ${adminId}`);
 
         res.json({
             message: 'Status updated',
@@ -1196,6 +1225,8 @@ router.post('/admin/add-points', authenticateAdmin, checkPermission('manage_user
             [userId, points]
         );
 
+        await logAdminActivity(pool, req.admin.adminId, 'add_points', `Added ${points} points to user ID ${userId}`);
+
         res.json({ success: true, message: `Added ${points} points successfully` });
     } catch (error) {
         console.error('Failed to add points:', error);
@@ -1238,6 +1269,8 @@ router.post('/admin/deduct-points', authenticateAdmin, checkPermission('manage_u
             [userId, -points, -points]
         );
 
+        await logAdminActivity(pool, req.admin.adminId, 'deduct_points', `Deducted ${points} points from user ID ${userId}`);
+
         res.json({ success: true, message: `Deducted ${points} points successfully` });
     } catch (error) {
         console.error('Failed to deduct points:', error);
@@ -1255,9 +1288,12 @@ router.delete('/admin/delete-user/:userId', authenticateAdmin, checkPermission('
         // Delete user (CASCADE will handle related records)
         await pool.query('DELETE FROM users WHERE id = $1', [userId]);
 
+        await logAdminActivity(pool, req.admin.adminId, 'delete_user', `Deleted user ID ${userId}`);
+
         res.json({ success: true, message: 'User deleted successfully' });
     } catch (error) {
         console.error('Failed to delete user:', error);
+
         res.status(500).json({ error: 'Failed to delete user' });
     }
 });
@@ -1354,6 +1390,8 @@ router.delete('/admin/delete-submission/:submissionId', authenticateAdmin, check
         // Delete submission (CASCADE will handle user_recipients)
         await pool.query('DELETE FROM submissions WHERE id = $1', [submissionId]);
 
+        await logAdminActivity(pool, req.admin.adminId, 'delete_submission', `Deleted submission ID ${submissionId}`);
+
         res.json({
             success: true,
             message: 'Submission deleted successfully',
@@ -1387,6 +1425,8 @@ router.post('/admin/bulk-delete-submissions', authenticateAdmin, checkPermission
 
         // Delete submissions
         await pool.query('DELETE FROM submissions WHERE id = ANY($1)', [submissionIds]);
+
+        await logAdminActivity(pool, req.admin.adminId, 'bulk_delete_submissions', `Bulk deleted ${submissionIds.length} submissions`);
 
         res.json({
             success: true,
@@ -1436,6 +1476,8 @@ router.post('/admin/create-offer', authenticateAdmin, checkPermission('manage_of
             [imagePath, caption]
         );
 
+        await logAdminActivity(pool, req.admin.adminId, 'create_offer', `Created offer: ${caption.substring(0, 50)}`);
+
         res.json({ success: true, offer: newOffer.rows[0] });
     } catch (error) {
         console.error('Failed to create offer:', error);
@@ -1466,6 +1508,7 @@ router.put('/admin/update-offer/:offerId', authenticateAdmin, checkPermission('m
                 [caption, offerId]
             );
         }
+        await logAdminActivity(pool, req.admin.adminId, 'update_offer', `Updated offer ID ${offerId}`);
 
         res.json({ success: true, message: 'Offer updated successfully' });
     } catch (error) {
@@ -1487,6 +1530,8 @@ router.post('/admin/set-active-offer', authenticateAdmin, checkPermission('manag
         // Set selected offer to active
         await pool.query('UPDATE offers SET is_active = true WHERE id = $1', [offerId]);
 
+        await logAdminActivity(pool, req.admin.adminId, 'set_active_offer', `Set offer ID ${offerId} as active`);
+
         res.json({ success: true, message: 'Active offer updated' });
     } catch (error) {
         console.error('Failed to set active offer:', error);
@@ -1502,6 +1547,8 @@ router.delete('/admin/delete-offer/:offerId', authenticateAdmin, checkPermission
         const pool = req.app.get('db');
 
         await pool.query('DELETE FROM offers WHERE id = $1', [offerId]);
+
+        await logAdminActivity(pool, req.admin.adminId, 'delete_offer', `Deleted offer ID ${offerId}`);
 
         res.json({ success: true, message: 'Offer deleted successfully' });
     } catch (error) {
@@ -1568,6 +1615,9 @@ router.put('/admin/settings/:settingKey', authenticateAdmin, checkPermission('vi
             'UPDATE system_settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
             [value, settingKey]
         );
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_setting', `Updated ${settingKey} to ${value}`);
+
 
         res.json({ success: true, message: 'Setting updated successfully' });
     } catch (error) {
@@ -1663,6 +1713,8 @@ router.get('/admin/platform-stats-config', authenticateAdmin, checkPermission('v
             return res.status(404).json({ error: 'Config not found' });
         }
 
+        await logAdminActivity(pool, req.admin.adminId, 'update_platform_stats', `Updated platform stats configuration`);
+
         res.json({ config: config.rows[0] });
     } catch (error) {
         console.error('Failed to get config:', error);
@@ -1717,6 +1769,8 @@ router.put('/admin/platform-stats-config', authenticateAdmin, checkPermission('v
             total_paid_target,
             total_paid_days_to_complete
         ]);
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_platform_stats', `Updated platform stats configuration`);
 
         res.json({ success: true, message: 'Platform stats config updated successfully' });
 
@@ -1859,6 +1913,8 @@ router.post('/admin/send-message', authenticateAdmin, checkPermission('send_mess
             [userId, title, message, adminId]
         );
 
+        await logAdminActivity(pool, req.admin.adminId, 'send_message', `Sent message to user ${userId}: "${title}"`);
+
         res.json({ success: true, message: 'Message sent successfully' });
 
     } catch (error) {
@@ -1882,6 +1938,8 @@ router.post('/admin/broadcast-message', authenticateAdmin, checkPermission('send
             'INSERT INTO broadcast_messages (title, message, sent_by_admin) VALUES ($1, $2, $3)',
             [title, message, adminId]
         );
+
+        await logAdminActivity(pool, req.admin.adminId, 'broadcast_message', `Broadcast: "${title}" to all users`);
 
         res.json({ success: true, message: 'Broadcast sent successfully' });
 
@@ -1955,6 +2013,8 @@ router.delete('/admin/clear-all-messages', authenticateAdmin, checkPermission('s
         await pool.query('DELETE FROM user_messages');
         await pool.query('DELETE FROM broadcast_messages');
 
+        await logAdminActivity(pool, req.admin.adminId, 'clear_all_messages', `Cleared all user messages and broadcasts`);
+
         res.json({ success: true, message: 'All messages cleared successfully' });
 
     } catch (error) {
@@ -1971,6 +2031,8 @@ router.delete('/admin/clear-all-submissions', authenticateAdmin, checkPermission
         // This will cascade delete user_recipients due to foreign key
         await pool.query('DELETE FROM submissions');
 
+        await logAdminActivity(pool, req.admin.adminId, 'clear_all_submissions', `Cleared all submissions`);
+
         res.json({ success: true, message: 'All submissions cleared successfully' });
 
     } catch (error) {
@@ -1986,7 +2048,11 @@ router.delete('/admin/clear-all-redemptions', authenticateAdmin, checkPermission
 
         await pool.query('DELETE FROM redemptions');
 
+        await logAdminActivity(pool, req.admin.adminId, 'clear_all_redemptions', `Cleared all redemption history`);
+
         res.json({ success: true, message: 'All redemptions cleared successfully' });
+
+
 
     } catch (error) {
         console.error('Failed to clear redemptions:', error);
@@ -2000,6 +2066,8 @@ router.delete('/admin/clear-recipients-history', authenticateAdmin, checkPermiss
         const pool = req.app.get('db');
 
         await pool.query('DELETE FROM user_recipients');
+
+        await logAdminActivity(pool, req.admin.adminId, 'clear_recipients_history', `Cleared recipients history`);
 
         res.json({ success: true, message: 'Recipient history cleared successfully' });
 
@@ -2243,6 +2311,8 @@ router.post('/admin/create-banner', authenticateAdmin, checkPermission('manage_b
             'INSERT INTO banners (image_url, title, link_url, display_order) VALUES ($1, $2, $3, $4)',
             [imagePath, title || null, link_url || null, display_order || 0]
         );
+        // ⬇️ ADD THIS LINE HERE (after banner is created, before res.json)
+        await logAdminActivity(pool, req.admin.adminId, 'create_banner', `Created banner: ${title || 'Untitled'}`);
 
         res.json({ success: true, message: 'Banner created successfully' });
     } catch (error) {
@@ -2272,6 +2342,14 @@ router.put('/admin/update-banner/:id', authenticateAdmin, checkPermission('manag
             );
         }
 
+        // After successful update, BEFORE res.json():
+        await logAdminActivity(
+            pool,
+            req.admin.adminId,
+            'update_banner',
+            `Updated banner ID ${id}: ${title || 'Untitled'}`
+        );
+
         res.json({ success: true, message: 'Banner updated successfully' });
     } catch (error) {
         console.error('Failed to update banner:', error);
@@ -2289,6 +2367,11 @@ router.post('/admin/toggle-banner/:id', authenticateAdmin, checkPermission('mana
             'UPDATE banners SET is_active = NOT is_active, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
             [id]
         );
+
+
+        // ⬇️ ADD THIS LINE HERE (after toggle, before res.json)
+        await logAdminActivity(pool, req.admin.adminId, 'toggle_banner', `Toggled banner ID ${id} status`);
+
         res.json({ success: true, message: 'Banner status updated' });
     } catch (error) {
         console.error('Failed to toggle banner:', error);
@@ -2303,6 +2386,11 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, checkPermission('ma
     try {
         const pool = req.app.get('db');
         await pool.query('DELETE FROM banners WHERE id = $1', [id]);
+
+        // ⬇️ ADD THIS LINE HERE (after deletion, before res.json)
+        await logAdminActivity(pool, req.admin.adminId, 'delete_banner', `Deleted banner ID ${id}`);
+
+
         res.json({ success: true, message: 'Banner deleted successfully' });
     } catch (error) {
         console.error('Failed to delete banner:', error);
@@ -2361,6 +2449,9 @@ router.post('/admin/create-social-link', authenticateAdmin, checkPermission('man
             [platform, title, url, icon, displayOrder || 0]
         );
 
+
+        await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title} (${platform})`);
+
         res.json({
             message: 'Social link created successfully',
             link: result.rows[0]
@@ -2390,6 +2481,11 @@ router.put('/admin/update-social-link/:id', authenticateAdmin, checkPermission('
             return res.status(404).json({ error: 'Social link not found' });
         }
 
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_social_link', `Updated social link ID ${id}: ${title}`);
+
+
+
         res.json({
             message: 'Social link updated successfully',
             link: result.rows[0]
@@ -2415,6 +2511,7 @@ router.post('/admin/toggle-social-link/:id', authenticateAdmin, checkPermission(
             return res.status(404).json({ error: 'Social link not found' });
         }
 
+        await logAdminActivity(pool, req.admin.adminId, 'toggle_social_link', `Toggled social link ID ${id} status`);
         res.json({
             message: 'Status toggled successfully',
             link: result.rows[0]
@@ -2439,6 +2536,8 @@ router.delete('/admin/delete-social-link/:id', authenticateAdmin, checkPermissio
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Social link not found' });
         }
+
+        await logAdminActivity(pool, req.admin.adminId, 'delete_social_link', `Deleted social link ID ${id}`);
 
         res.json({ message: 'Social link deleted successfully' });
     } catch (error) {
