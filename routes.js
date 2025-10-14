@@ -22,11 +22,11 @@ const checkPermission = (requiredPermission) => {
 
             // Check if admin has the required permission
             const result = await pool.query(
-                'SELECT permission_id FROM admin_permissions WHERE admin_id = $1',
+                'SELECT permission FROM admin_permissions WHERE admin_id = $1',
                 [req.admin.id]
             );
 
-            const permissions = result.rows.map(row => row.permission_id);
+            const permissions = result.rows.map(row => row.permission);
 
             if (!permissions.includes(requiredPermission)) {
                 return res.status(403).json({ error: 'Access denied. Insufficient permissions.' });
@@ -545,16 +545,16 @@ router.post('/admin/login', async (req, res) => {
             [admin.rows[0].id]
         );
 
-        // ⬇️ ADD THIS SECTION - Fetch permissions ⬇️
+        // Fetch permissions
         let permissions = [];
         if (admin.rows[0].role !== 'super_admin') {
             const permResult = await pool.query(
-                'SELECT permission_id FROM admin_permissions WHERE admin_id = $1',
+                'SELECT permission FROM admin_permissions WHERE admin_id = $1',  // ✅ FIXED
                 [admin.rows[0].id]
             );
-            permissions = permResult.rows.map(row => row.permission_id);
+            permissions = permResult.rows.map(row => row.permission);  // ✅ FIXED
         }
-        // ⬆️ END NEW SECTION ⬆️
+
 
         // Create JWT token with role
         const token = jwt.sign({
@@ -685,7 +685,7 @@ router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) 
             [id]
         );
 
-        const permissions = result.rows.map(row => row.permission);
+         const permissions = result.rows.map(row => row.permission); 
         res.json({ permissions });
     } catch (error) {
         console.error('Error fetching permissions:', error);
