@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
 
-// Permission checking middleware
+// Permission checking middleware - FIXED VERSION
 const checkPermission = (requiredPermission) => {
     return async (req, res, next) => {
         try {
@@ -16,6 +16,9 @@ const checkPermission = (requiredPermission) => {
             if (req.admin.role === 'super_admin') {
                 return next();
             }
+
+            // Get database pool
+            const pool = req.app.get('db');  // ⬅️ FIX: Get pool from req.app
 
             // Check if admin has the required permission
             const result = await pool.query(
@@ -36,8 +39,6 @@ const checkPermission = (requiredPermission) => {
         }
     };
 };
-
-
 // File upload configuration - Organized by type
 const uploadsDir = './uploads';
 const bannersDir = './uploads/banners';
@@ -919,7 +920,7 @@ router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, re
 router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { adminId, limit = 50, offset = 0 } = req.query;
+        const { adminId, limit = 50 } = req.query;
 
         // Check if super admin
         const adminCheck = await pool.query(
@@ -931,23 +932,30 @@ router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
             return res.status(403).json({ error: 'Access denied' });
         }
 
+        // Build query with JOIN to get admin username
         let query = `
-            SELECT * FROM admin_activity_logs
-            ${adminId ? 'WHERE admin_id = $1' : ''}
-            ORDER BY created_at DESC
-            LIMIT $${adminId ? '2' : '1'} OFFSET $${adminId ? '3' : '2'}
+            SELECT aal.*, a.username as admin_username
+            FROM admin_activity_logs aal
+            JOIN admins a ON aal.admin_id = a.id
         `;
 
-        const params = adminId
-            ? [adminId, limit, offset]
-            : [limit, offset];
+        const params = [];
+
+        // If adminId provided, filter by that admin
+        if (adminId) {
+            query += ' WHERE aal.admin_id = $1';
+            params.push(adminId);
+        }
+
+        query += ' ORDER BY aal.created_at DESC LIMIT $' + (params.length + 1);
+        params.push(limit);
 
         const result = await pool.query(query, params);
 
         res.json({ logs: result.rows });
     } catch (error) {
-        console.error('Error fetching logs:', error);
-        res.status(500).json({ error: 'Failed to fetch logs' });
+        console.error('Error fetching activity logs:', error);
+        res.status(500).json({ error: 'Failed to fetch activity logs' });
     }
 });
 
