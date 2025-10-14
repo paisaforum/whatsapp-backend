@@ -475,7 +475,8 @@ router.get('/settings', async (req, res) => {
 });
 
 
-// Admin login
+
+
 router.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
 
@@ -486,14 +487,19 @@ router.post('/admin/login', async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // Find admin
+        // Find admin - ADD 'role' and 'is_active' to SELECT
         const admin = await pool.query(
-            'SELECT id, username, password_hash FROM admins WHERE username = $1',
+            'SELECT id, username, password_hash, role, is_active FROM admins WHERE username = $1',
             [username]
         );
 
         if (admin.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid username or password' });
+        }
+
+        // ADD: Check if admin is active
+        if (!admin.rows[0].is_active) {
+            return res.status(401).json({ error: 'Your account has been disabled. Contact super admin.' });
         }
 
         // Check password
@@ -503,16 +509,24 @@ router.post('/admin/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
-        // Create JWT token
+        // Update last login timestamp
+        await pool.query(
+            'UPDATE admins SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+            [admin.rows[0].id]
+        );
+
+        // Create JWT token with role
         const token = jwt.sign({
             adminId: admin.rows[0].id,
             username: admin.rows[0].username,
-            isAdmin: true  // ← Add this!
+            role: admin.rows[0].role,  // ← ADD THIS
+            isAdmin: true
         }, JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
             adminId: admin.rows[0].id,
             token: token,
+            role: admin.rows[0].role,  // ← ADD THIS
             message: 'Login successful!'
         });
     } catch (error) {
@@ -520,8 +534,6 @@ router.post('/admin/login', async (req, res) => {
         res.status(500).json({ error: 'Login failed' });
     }
 });
-
-
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
 
@@ -583,7 +595,7 @@ router.post('/admin/change-password', authenticateAdmin, async (req, res) => {
 router.get('/admin/admins', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Check if super admin
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
@@ -700,7 +712,7 @@ router.post('/admin/create-admin', authenticateAdmin, async (req, res) => {
             [req.admin.adminId, req.admin.username, `Created admin: ${username}`]
         );
 
-        res.json({ 
+        res.json({
             message: 'Admin created successfully',
             admin: result.rows[0]
         });
@@ -846,11 +858,11 @@ router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, re
         await pool.query(
             `INSERT INTO admin_activity_logs (admin_id, admin_username, action, details) 
              VALUES ($1, $2, 'STATUS_CHANGED', $3)`,
-            [req.admin.adminId, req.admin.username, 
-             `Changed status for ${result.rows[0].username} to ${result.rows[0].is_active ? 'active' : 'inactive'}`]
+            [req.admin.adminId, req.admin.username,
+            `Changed status for ${result.rows[0].username} to ${result.rows[0].is_active ? 'active' : 'inactive'}`]
         );
 
-        res.json({ 
+        res.json({
             message: 'Status updated',
             isActive: result.rows[0].is_active
         });
@@ -883,7 +895,7 @@ router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
             LIMIT $${adminId ? '2' : '1'} OFFSET $${adminId ? '3' : '2'}
         `;
 
-        const params = adminId 
+        const params = adminId
             ? [adminId, limit, offset]
             : [limit, offset];
 
@@ -897,8 +909,10 @@ router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
 });
 
 
+
+
 // Get all redemption requests (admin) - with pagination, filters, search
-router.get('/admin/redemptions',authenticateAdmin, async (req, res) => {
+router.get('/admin/redemptions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, status = 'all', search = '' } = req.query;
@@ -966,7 +980,7 @@ router.get('/admin/redemptions',authenticateAdmin, async (req, res) => {
 });
 
 // Get user submissions (admin)
-router.get('/admin/user-submissions/:userId',authenticateAdmin, async (req, res) => {
+router.get('/admin/user-submissions/:userId', authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -991,7 +1005,7 @@ router.get('/admin/user-submissions/:userId',authenticateAdmin, async (req, res)
 });
 
 // Review redemption (admin)
-router.post('/admin/review-redemption',authenticateAdmin, async (req, res) => {
+router.post('/admin/review-redemption', authenticateAdmin, async (req, res) => {
     const { redemptionId, action, giftCode, rejectionReason, adminId } = req.body;
 
     try {
@@ -1057,7 +1071,7 @@ router.post('/admin/review-redemption',authenticateAdmin, async (req, res) => {
 });
 
 // Get all users (admin) - with pagination and search
-router.get('/admin/users',authenticateAdmin, async (req, res) => {
+router.get('/admin/users', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { page = 1, limit = 20, search = '' } = req.query;
@@ -1114,7 +1128,7 @@ router.get('/admin/users',authenticateAdmin, async (req, res) => {
 
 
 // Add points to user (admin - for testing)
-router.post('/admin/add-points',authenticateAdmin, async (req, res) => {
+router.post('/admin/add-points', authenticateAdmin, async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -1140,7 +1154,7 @@ router.post('/admin/add-points',authenticateAdmin, async (req, res) => {
 
 
 // Deduct points from user (admin)
-router.post('/admin/deduct-points',authenticateAdmin, async (req, res) => {
+router.post('/admin/deduct-points', authenticateAdmin, async (req, res) => {
     const { userId, points } = req.body;
 
     if (!userId || !points || points <= 0) {
@@ -1181,7 +1195,7 @@ router.post('/admin/deduct-points',authenticateAdmin, async (req, res) => {
 });
 
 // Delete user (admin)
-router.delete('/admin/delete-user/:userId',authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-user/:userId', authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1199,7 +1213,7 @@ router.delete('/admin/delete-user/:userId',authenticateAdmin, async (req, res) =
 
 
 // Cancel submission (user)
-router.post('/cancel-submission',authenticateUser, async (req, res) => {
+router.post('/cancel-submission', authenticateUser, async (req, res) => {
     const { submissionId, userId } = req.body;
 
     if (!submissionId || !userId) {
@@ -1239,7 +1253,7 @@ router.post('/cancel-submission',authenticateUser, async (req, res) => {
 
 
 // Get user profile (admin)
-router.get('/admin/user-profile/:userId',authenticateAdmin, async (req, res) => {
+router.get('/admin/user-profile/:userId', authenticateAdmin, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1270,7 +1284,7 @@ router.get('/admin/user-profile/:userId',authenticateAdmin, async (req, res) => 
 
 
 // Delete single submission (admin)
-router.delete('/admin/delete-submission/:submissionId',authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-submission/:submissionId', authenticateAdmin, async (req, res) => {
     const { submissionId } = req.params;
 
     try {
@@ -1302,7 +1316,7 @@ router.delete('/admin/delete-submission/:submissionId',authenticateAdmin, async 
 });
 
 // Bulk delete submissions (admin)
-router.post('/admin/bulk-delete-submissions',authenticateAdmin, async (req, res) => {
+router.post('/admin/bulk-delete-submissions', authenticateAdmin, async (req, res) => {
     const { submissionIds } = req.body;
 
     if (!submissionIds || submissionIds.length === 0) {
@@ -1337,7 +1351,7 @@ router.post('/admin/bulk-delete-submissions',authenticateAdmin, async (req, res)
 
 
 // Get all offers (admin)
-router.get('/admin/offers',authenticateAdmin, async (req, res) => {
+router.get('/admin/offers', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1353,7 +1367,7 @@ router.get('/admin/offers',authenticateAdmin, async (req, res) => {
 });
 
 // Create new offer (admin)
-router.post('/admin/create-offer',authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
+router.post('/admin/create-offer', authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
     const { caption } = req.body;
     const image = req.file;
 
@@ -1379,7 +1393,7 @@ router.post('/admin/create-offer',authenticateAdmin, uploadOffer.single('image')
 });
 
 // Update offer (admin)
-router.put('/admin/update-offer/:offerId',authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
+router.put('/admin/update-offer/:offerId', authenticateAdmin, uploadOffer.single('image'), async (req, res) => {
     const { offerId } = req.params;
     const { caption } = req.body;
     const image = req.file;
@@ -1410,7 +1424,7 @@ router.put('/admin/update-offer/:offerId',authenticateAdmin, uploadOffer.single(
 });
 
 // Set active offer (admin)
-router.post('/admin/set-active-offer',authenticateAdmin, async (req, res) => {
+router.post('/admin/set-active-offer', authenticateAdmin, async (req, res) => {
     const { offerId } = req.body;
 
     try {
@@ -1430,7 +1444,7 @@ router.post('/admin/set-active-offer',authenticateAdmin, async (req, res) => {
 });
 
 // Delete offer (admin)
-router.delete('/admin/delete-offer/:offerId',authenticateAdmin, async (req, res) => {
+router.delete('/admin/delete-offer/:offerId', authenticateAdmin, async (req, res) => {
     const { offerId } = req.params;
 
     try {
@@ -1447,7 +1461,7 @@ router.delete('/admin/delete-offer/:offerId',authenticateAdmin, async (req, res)
 
 
 // Get all recipient numbers for a user
-router.get('/user-recipients/:userId',authenticateUser, async (req, res) => {
+router.get('/user-recipients/:userId', authenticateUser, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -1472,7 +1486,7 @@ router.get('/user-recipients/:userId',authenticateUser, async (req, res) => {
 });
 
 // Get system settings (admin)
-router.get('/admin/settings',authenticateAdmin, async (req, res) => {
+router.get('/admin/settings', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1488,7 +1502,7 @@ router.get('/admin/settings',authenticateAdmin, async (req, res) => {
 });
 
 // Update system setting (admin)
-router.put('/admin/settings/:settingKey',authenticateAdmin, async (req, res) => {
+router.put('/admin/settings/:settingKey', authenticateAdmin, async (req, res) => {
     const { settingKey } = req.params;
     const { value } = req.body;
 
@@ -1589,7 +1603,7 @@ router.get('/platform-stats', async (req, res) => {
 });
 
 // Get platform stats config (admin only)
-router.get('/admin/platform-stats-config',authenticateAdmin, async (req, res) => {
+router.get('/admin/platform-stats-config', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const config = await pool.query('SELECT * FROM platform_stats_config WHERE id = 1');
@@ -1606,7 +1620,7 @@ router.get('/admin/platform-stats-config',authenticateAdmin, async (req, res) =>
 });
 
 // Update platform stats config (admin only)
-router.put('/admin/platform-stats-config',authenticateAdmin, async (req, res) => {
+router.put('/admin/platform-stats-config', authenticateAdmin, async (req, res) => {
     const {
         total_users_current,
         total_users_target,
@@ -1670,7 +1684,7 @@ router.put('/admin/platform-stats-config',authenticateAdmin, async (req, res) =>
 // ============================================
 
 // Get messages for a user (inbox)
-router.get('/messages/:userId', authenticateUser,async (req, res) => {
+router.get('/messages/:userId', authenticateUser, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -2163,7 +2177,7 @@ router.get('/admin/banners', authenticateAdmin, async (req, res) => {
 });
 
 // Create banner (admin)
-router.post('/admin/create-banner',authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
+router.post('/admin/create-banner', authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
     const { title, link_url, display_order } = req.body;
 
     if (!req.file) {
@@ -2187,7 +2201,7 @@ router.post('/admin/create-banner',authenticateAdmin, uploadBanner.single('image
 });
 
 // Update banner (admin)
-router.put('/admin/update-banner/:id',authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
+router.put('/admin/update-banner/:id', authenticateAdmin, uploadBanner.single('image'), async (req, res) => {
     const { id } = req.params;
     const { title, link_url, display_order } = req.body;
 
@@ -2252,11 +2266,11 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, async (req, res) =>
 router.get('/social-links', async (req, res) => {
     try {
         const pool = req.app.get('db'); // ← CRITICAL: Get database pool
-        
+
         const result = await pool.query(
             'SELECT * FROM social_links WHERE is_active = true ORDER BY display_order ASC'
         );
-        
+
         res.json({ links: result.rows });
     } catch (error) {
         console.error('Error fetching social links:', error);
@@ -2268,11 +2282,11 @@ router.get('/social-links', async (req, res) => {
 router.get('/admin/social-links', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db'); // ← CRITICAL: Get database pool
-        
+
         const result = await pool.query(
             'SELECT * FROM social_links ORDER BY display_order ASC'
         );
-        
+
         res.json({ links: result.rows });
     } catch (error) {
         console.error('Error fetching admin social links:', error);
@@ -2296,7 +2310,7 @@ router.post('/admin/create-social-link', authenticateAdmin, async (req, res) => 
             [platform, title, url, icon, displayOrder || 0]
         );
 
-        res.json({ 
+        res.json({
             message: 'Social link created successfully',
             link: result.rows[0]
         });
@@ -2325,7 +2339,7 @@ router.put('/admin/update-social-link/:id', authenticateAdmin, async (req, res) 
             return res.status(404).json({ error: 'Social link not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Social link updated successfully',
             link: result.rows[0]
         });
@@ -2350,7 +2364,7 @@ router.post('/admin/toggle-social-link/:id', authenticateAdmin, async (req, res)
             return res.status(404).json({ error: 'Social link not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Status toggled successfully',
             link: result.rows[0]
         });
