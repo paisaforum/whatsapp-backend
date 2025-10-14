@@ -61,6 +61,7 @@ const authenticateAdmin = (req, res, next) => {
         
         // ⬇️ FIX: Attach admin object to request (not individual properties)
         req.admin = {
+            id: decoded.adminId,  
             adminId: decoded.adminId,
             username: decoded.username,
             role: decoded.role || 'admin',  // ← ADD: Include role from token
