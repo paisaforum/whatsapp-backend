@@ -2892,7 +2892,7 @@ router.get('/admin/social-links', authenticateAdmin, checkPermission('manage_soc
 
 
 // Upload social icon
-router.post('/admin/social-links/upload-icon', authenticateAdmin, hasPermission('manage_social_links'), upload.single('icon'), async (req, res) => {
+router.post('/admin/social-links/upload-icon', authenticateAdmin, upload.single('icon'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
