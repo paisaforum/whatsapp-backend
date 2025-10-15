@@ -522,72 +522,88 @@ router.get('/settings', async (req, res) => {
 
 
 
+// Admin Login
 router.post('/admin/login', async (req, res) => {
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-        return res.status(400).json({ error: 'Username and password are required' });
-    }
-
     try {
         const pool = req.app.get('db');
+        const { username, password, twoFactorCode } = req.body;
 
-        // Find admin - ADD 'role' and 'is_active' to SELECT
-        const admin = await pool.query(
-            'SELECT id, username, password_hash, role, is_active FROM admins WHERE username = $1',
+        // Find admin
+        const result = await pool.query(
+            'SELECT * FROM admins WHERE username = $1',
             [username]
         );
 
-        if (admin.rows.length === 0) {
+        if (result.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
-        // ADD: Check if admin is active
-        if (!admin.rows[0].is_active) {
-            return res.status(401).json({ error: 'Your account has been disabled. Contact super admin.' });
+        const admin = result.rows[0];
+
+        // Check if admin is active
+        if (!admin.is_active) {
+            return res.status(403).json({ error: 'Account is disabled. Contact super admin.' });
         }
 
-        // Check password
-        const validPassword = await bcrypt.compare(password, admin.rows[0].password_hash);
-
+        // Verify password
+        const validPassword = await bcrypt.compare(password, admin.password_hash);
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
-        // Update last login timestamp
-        await pool.query(
-            'UPDATE admins SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
-            [admin.rows[0].id]
-        );
+        // Check if 2FA is enabled
+        if (admin.two_fa_enabled) {
+            if (!twoFactorCode) {
+                // Need 2FA code
+                return res.status(200).json({
+                    requiresTwoFactor: true,
+                    message: 'Please enter your 2FA code'
+                });
+            }
 
-        // Fetch permissions
-        let permissions = [];
-        if (admin.rows[0].role !== 'super_admin') {
-            const permResult = await pool.query(
-                'SELECT permission FROM admin_permissions WHERE admin_id = $1',  // ✅ FIXED
-                [admin.rows[0].id]
-            );
-            permissions = permResult.rows.map(row => row.permission);  // ✅ FIXED
+            // Verify 2FA code
+            const valid2FA = await verify2FACode(pool, admin.id, twoFactorCode);
+            if (!valid2FA) {
+                return res.status(401).json({ error: 'Invalid 2FA code' });
+            }
         }
 
+        // Get admin permissions
+        const permResult = await pool.query(
+            'SELECT permission FROM admin_permissions WHERE admin_id = $1',
+            [admin.id]
+        );
 
-        // Create JWT token with role
-        const token = jwt.sign({
-            adminId: admin.rows[0].id,
-            username: admin.rows[0].username,
-            role: admin.rows[0].role,
-            isAdmin: true
-        }, JWT_SECRET, { expiresIn: '7d' });
+        const permissions = permResult.rows.map(row => row.permission);
+
+        // Update last login
+        await pool.query(
+            'UPDATE admins SET last_login = NOW() WHERE id = $1',
+            [admin.id]
+        );
+
+        // Generate JWT
+        const token = jwt.sign(
+            {
+                adminId: admin.id,
+                username: admin.username,
+                role: admin.role,
+                isAdmin: true
+            },
+            JWT_SECRET,
+            { expiresIn: '7d' }
+        );
 
         res.json({
-            adminId: admin.rows[0].id,
-            token: token,
-            role: admin.rows[0].role,
-            permissions: permissions,  // ⬅️ ADD THIS LINE
+            token,
+            adminId: admin.id,
+            role: admin.role,
+            permissions,
             message: 'Login successful!'
         });
+
     } catch (error) {
-        console.error('Admin login error:', error);
+        console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
     }
 });
@@ -602,19 +618,19 @@ router.post('/admin/logout', authenticateAdmin, async (req, res) => {
         const pool = req.app.get('db');
         const token = req.headers.authorization.substring(7);
         const decoded = jwt.verify(token, JWT_SECRET);
-        
+
         // Calculate token expiry
         const expiresAt = new Date(decoded.exp * 1000);
-        
+
         // Add token to blacklist
         await pool.query(
             'INSERT INTO token_blacklist (token, admin_id, expires_at) VALUES ($1, $2, $3)',
             [token, req.admin.adminId, expiresAt]
         );
-        
+
         // Log activity
         await logAdminActivity(pool, req.admin.adminId, 'logout', 'Logged out');
-        
+
         res.json({ message: 'Logged out successfully' });
     } catch (error) {
         console.error('Logout error:', error);
@@ -628,16 +644,16 @@ router.post('/logout', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const token = req.headers.authorization.split(' ')[1];
         const decoded = jwt.verify(token, JWT_SECRET);
-        
+
         // Calculate token expiry
         const expiresAt = new Date(decoded.exp * 1000);
-        
+
         // Add token to blacklist
         await pool.query(
             'INSERT INTO token_blacklist (token, user_id, expires_at) VALUES ($1, $2, $3)',
             [token, req.userId, expiresAt]
         );
-        
+
         res.json({ message: 'Logged out successfully' });
     } catch (error) {
         console.error('Logout error:', error);
@@ -645,37 +661,38 @@ router.post('/logout', authenticateUser, async (req, res) => {
     }
 });
 
+
+
 // Cleanup expired tokens from blacklist (Super Admin only)
 router.post('/admin/cleanup-blacklist', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Check if super admin
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
             [req.admin.adminId]
         );
-        
+
         if (adminCheck.rows[0].role !== 'super_admin') {
             return res.status(403).json({ error: 'Access denied' });
         }
-        
+
         const result = await pool.query(
             'DELETE FROM token_blacklist WHERE expires_at < NOW()'
         );
-        
+
         await logAdminActivity(pool, req.admin.adminId, 'cleanup_blacklist', `Cleaned up ${result.rowCount} expired tokens`);
-        
-        res.json({ 
-            message: 'Cleanup completed', 
-            deletedCount: result.rowCount 
+
+        res.json({
+            message: 'Cleanup completed',
+            deletedCount: result.rowCount
         });
     } catch (error) {
         console.error('Cleanup error:', error);
         res.status(500).json({ error: 'Cleanup failed' });
     }
 });
-
 
 
 // ========================================
@@ -855,7 +872,6 @@ const verify2FACode = async (pool, adminId, code) => {
     });
 };
 
-
 // ========================================
 // FILE MANAGER ROUTES (SUPER ADMIN ONLY)
 // ========================================
@@ -864,44 +880,44 @@ const verify2FACode = async (pool, adminId, code) => {
 router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Check if super admin
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
             [req.admin.adminId]
         );
-        
+
         if (adminCheck.rows[0].role !== 'super_admin') {
             return res.status(403).json({ error: 'Access denied' });
         }
 
         const fs = require('fs');
         const path = require('path');
-        
+
         const uploadsDir = './uploads';
         const folders = ['banners', 'offers', 'submissions'];
-        
+
         const filesByFolder = {};
         let totalSize = 0;
         let totalFiles = 0;
-        
+
         for (const folder of folders) {
             const folderPath = path.join(uploadsDir, folder);
-            
+
             if (!fs.existsSync(folderPath)) {
                 filesByFolder[folder] = [];
                 continue;
             }
-            
+
             const files = fs.readdirSync(folderPath);
-            
+
             filesByFolder[folder] = files.map(filename => {
                 const filePath = path.join(folderPath, filename);
                 const stats = fs.statSync(filePath);
-                
+
                 totalSize += stats.size;
                 totalFiles++;
-                
+
                 return {
                     filename,
                     folder,
@@ -912,7 +928,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
                 };
             }).sort((a, b) => b.modified - a.modified); // Newest first
         }
-        
+
         res.json({
             files: filesByFolder,
             stats: {
@@ -923,7 +939,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
                 submissionCount: filesByFolder.submissions.length
             }
         });
-        
+
     } catch (error) {
         console.error('File manager list error:', error);
         res.status(500).json({ error: 'Failed to list files' });
@@ -934,13 +950,13 @@ router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
 router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Check if super admin
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
             [req.admin.adminId]
         );
-        
+
         if (adminCheck.rows[0].role !== 'super_admin') {
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -948,28 +964,28 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
         const fs = require('fs');
         const path = require('path');
         const { folder, filename } = req.params;
-        
+
         // Validate folder
         const allowedFolders = ['banners', 'offers', 'submissions'];
         if (!allowedFolders.includes(folder)) {
             return res.status(400).json({ error: 'Invalid folder' });
         }
-        
+
         const filePath = path.join('./uploads', folder, filename);
-        
+
         // Check if file exists
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
         }
-        
+
         // Delete file
         fs.unlinkSync(filePath);
-        
+
         // Log activity
         await logAdminActivity(pool, req.admin.adminId, 'delete_file', `Deleted file: ${folder}/${filename}`);
-        
+
         res.json({ message: 'File deleted successfully' });
-        
+
     } catch (error) {
         console.error('File delete error:', error);
         res.status(500).json({ error: 'Failed to delete file' });
@@ -980,13 +996,13 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
 router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Check if super admin
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
             [req.admin.adminId]
         );
-        
+
         if (adminCheck.rows[0].role !== 'super_admin') {
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -994,40 +1010,38 @@ router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, re
         const fs = require('fs');
         const path = require('path');
         const { files } = req.body; // Array of {folder, filename}
-        
+
         if (!Array.isArray(files) || files.length === 0) {
             return res.status(400).json({ error: 'No files specified' });
         }
-        
+
         let deletedCount = 0;
         const allowedFolders = ['banners', 'offers', 'submissions'];
-        
+
         for (const file of files) {
             if (!allowedFolders.includes(file.folder)) continue;
-            
+
             const filePath = path.join('./uploads', file.folder, file.filename);
-            
+
             if (fs.existsSync(filePath)) {
                 fs.unlinkSync(filePath);
                 deletedCount++;
             }
         }
-        
+
         // Log activity
         await logAdminActivity(pool, req.admin.adminId, 'bulk_delete_files', `Bulk deleted ${deletedCount} files`);
-        
-        res.json({ 
+
+        res.json({
             message: `Successfully deleted ${deletedCount} files`,
-            deletedCount 
+            deletedCount
         });
-        
+
     } catch (error) {
         console.error('Bulk delete error:', error);
         res.status(500).json({ error: 'Failed to delete files' });
     }
 });
-
-
 
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
