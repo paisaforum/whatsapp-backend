@@ -6,27 +6,51 @@ const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-change-in-production-1
 // Middleware to verify user token
 const authenticateUser = (req, res, next) => {
     try {
-        // Get token from Authorization header: "Bearer TOKEN"
         const authHeader = req.headers.authorization;
         
         if (!authHeader) {
             return res.status(401).json({ error: 'Authentication required' });
         }
         
-        const token = authHeader.split(' ')[1]; // Extract token after "Bearer "
+        const token = authHeader.split(' ')[1];
         
         if (!token) {
             return res.status(401).json({ error: 'Authentication required' });
         }
         
-        // Verify token
-        const decoded = jwt.verify(token, JWT_SECRET);
-        
-        // Attach userId to request object
-        req.userId = decoded.userId;
-        req.whatsappNumber = decoded.whatsappNumber;
-        
-        next(); // Continue to the route handler
+        // ⬇️ NEW: Check if token is blacklisted
+        const pool = req.app?.get('db');
+        if (pool) {
+            pool.query(
+                'SELECT id FROM token_blacklist WHERE token = $1 AND expires_at > NOW()',
+                [token]
+            ).then(result => {
+                if (result.rows.length > 0) {
+                    return res.status(401).json({ error: 'Token has been revoked' });
+                }
+                
+                // Verify token
+                const decoded = jwt.verify(token, JWT_SECRET);
+                
+                req.userId = decoded.userId;
+                req.whatsappNumber = decoded.whatsappNumber;
+                
+                next();
+            }).catch(err => {
+                console.error('Blacklist check error:', err);
+                // Continue even if blacklist check fails
+                const decoded = jwt.verify(token, JWT_SECRET);
+                req.userId = decoded.userId;
+                req.whatsappNumber = decoded.whatsappNumber;
+                next();
+            });
+        } else {
+            // If no pool available, skip blacklist check
+            const decoded = jwt.verify(token, JWT_SECRET);
+            req.userId = decoded.userId;
+            req.whatsappNumber = decoded.whatsappNumber;
+            next();
+        }
         
     } catch (error) {
         if (error.name === 'TokenExpiredError') {
@@ -36,48 +60,46 @@ const authenticateUser = (req, res, next) => {
     }
 };
 
-// Middleware to verify admin token
-const authenticateAdmin = (req, res, next) => {
+
+const authenticateAdmin = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
         
-        if (!authHeader) {
-            return res.status(401).json({ error: 'Admin authentication required' });
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'No token provided' });
+        }
+
+        const token = authHeader.substring(7);
+        
+        // ⬇️ NEW: Check if token is blacklisted
+        const pool = req.app?.get('db');
+        if (pool) {
+            const blacklisted = await pool.query(
+                'SELECT id FROM token_blacklist WHERE token = $1 AND expires_at > NOW()',
+                [token]
+            );
+            
+            if (blacklisted.rows.length > 0) {
+                return res.status(401).json({ error: 'Token has been revoked' });
+            }
         }
         
-        const token = authHeader.split(' ')[1];
-        
-        if (!token) {
-            return res.status(401).json({ error: 'Admin authentication required' });
-        }
-        
-        // Verify token
         const decoded = jwt.verify(token, JWT_SECRET);
-        
-        // Check if user is admin
-        if (!decoded.isAdmin) {
-            return res.status(403).json({ error: 'Admin access required' });
-        }
-        
-        // ⬇️ FIX: Attach admin object to request (not individual properties)
+
         req.admin = {
-            id: decoded.adminId,  
+            id: decoded.adminId,
             adminId: decoded.adminId,
             username: decoded.username,
-            role: decoded.role || 'admin',  // ← ADD: Include role from token
+            role: decoded.role || 'admin',
             isAdmin: decoded.isAdmin
         };
-        
+
         next();
-        
     } catch (error) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({ error: 'Token expired, please login again' });
-        }
-        return res.status(401).json({ error: 'Invalid admin token' });
+        console.error('Token verification error:', error);
+        return res.status(401).json({ error: 'Invalid or expired token' });
     }
 };
-
 module.exports = { 
     authenticateUser, 
     authenticateAdmin, 
