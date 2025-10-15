@@ -82,7 +82,6 @@ const bannerStorage = multer.diskStorage({
         cb(null, uniqueName);
     }
 });
-
 // Storage for social icons
 const socialIconStorage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -98,7 +97,7 @@ const socialIconStorage = multer.diskStorage({
     }
 });
 
-const uploadSocialIcon = multer({ 
+const uploadSocialIcon = multer({
     storage: socialIconStorage,
     limits: { fileSize: 1024 * 1024 }, // 1MB limit
     fileFilter: (req, file, cb) => {
@@ -110,6 +109,7 @@ const uploadSocialIcon = multer({
         }
     }
 });
+
 // Offer storage
 const offerStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/offers/'),
@@ -929,7 +929,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
         const path = require('path');
 
         const uploadsDir = './uploads';
-        const folders = ['banners', 'offers', 'submissions'];
+        const folders = ['banners', 'offers', 'submissions', 'social-icons']; // ← ADDED 'social-icons'
 
         const filesByFolder = {};
         let totalSize = 0;
@@ -970,7 +970,8 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
                 totalSize,
                 bannerCount: filesByFolder.banners.length,
                 offerCount: filesByFolder.offers.length,
-                submissionCount: filesByFolder.submissions.length
+                submissionCount: filesByFolder.submissions.length,
+                socialIconCount: filesByFolder['social-icons'].length  // ← ADDED THIS
             }
         });
 
@@ -2926,13 +2927,14 @@ router.post('/admin/social-links/upload-icon', authenticateAdmin, uploadSocialIc
         }
 
         const iconUrl = `/uploads/social-icons/${req.file.filename}`;
-        
+
         res.json({ iconUrl });
     } catch (error) {
         console.error('Icon upload error:', error);
         res.status(500).json({ error: 'Failed to upload icon' });
     }
 });
+
 // Create social link
 router.post('/admin/social-links', authenticateAdmin, async (req, res) => {
     try {
@@ -2947,7 +2949,7 @@ router.post('/admin/social-links', authenticateAdmin, async (req, res) => {
         );
 
         await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title}`);
-        
+
         res.json(result.rows[0]);
     } catch (error) {
         console.error('Create social link error:', error);
@@ -2975,7 +2977,7 @@ router.put('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
         }
 
         await logAdminActivity(pool, req.admin.adminId, 'update_social_link', `Updated social link: ${title}`);
-        
+
         res.json(result.rows[0]);
     } catch (error) {
         console.error('Update social link error:', error);
@@ -3021,13 +3023,14 @@ router.delete('/admin/social-links/:id', authenticateAdmin, async (req, res) => 
         }
 
         await logAdminActivity(pool, req.admin.adminId, 'delete_social_link', `Deleted social link: ${result.rows[0].title}`);
-        
+
         res.json({ message: 'Social link deleted successfully' });
     } catch (error) {
         console.error('Delete social link error:', error);
         res.status(500).json({ error: 'Failed to delete social link' });
     }
 });
+
 
 // Create social link (ADMIN ONLY)
 router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
