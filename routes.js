@@ -2898,14 +2898,9 @@ router.post('/admin/social-links/upload-icon', authenticateAdmin, upload.single(
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        // Move file to social-icons folder
-        const oldPath = req.file.path;
-        const newPath = path.join(__dirname, '../frontend/uploads/social-icons', req.file.filename);
-        
-        fs.renameSync(oldPath, newPath);
 
-        const iconUrl = `/uploads/social-icons/${req.file.filename}`;
-        
+        const iconUrl = `/uploads/${req.file.filename}`;
+
         res.json({ iconUrl });
     } catch (error) {
         console.error('Icon upload error:', error);
