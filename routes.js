@@ -2907,7 +2907,101 @@ router.post('/admin/social-links/upload-icon', authenticateAdmin, upload.single(
         res.status(500).json({ error: 'Failed to upload icon' });
     }
 });
+// Create social link
+router.post('/admin/social-links', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
 
+        const result = await pool.query(
+            `INSERT INTO social_links (platform, title, url, icon, icon_url, display_order, is_active, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+             RETURNING *`,
+            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title}`);
+        
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Create social link error:', error);
+        res.status(500).json({ error: 'Failed to create social link' });
+    }
+});
+
+// Update social link
+router.put('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
+
+        const result = await pool.query(
+            `UPDATE social_links 
+             SET platform = $1, title = $2, url = $3, icon = $4, icon_url = $5, display_order = $6
+             WHERE id = $7
+             RETURNING *`,
+            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_social_link', `Updated social link: ${title}`);
+        
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Update social link error:', error);
+        res.status(500).json({ error: 'Failed to update social link' });
+    }
+});
+
+// Toggle social link active status
+router.patch('/admin/social-links/:id/toggle', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `UPDATE social_links 
+             SET is_active = NOT is_active
+             WHERE id = $1
+             RETURNING *`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Toggle social link error:', error);
+        res.status(500).json({ error: 'Failed to toggle social link' });
+    }
+});
+
+// Delete social link
+router.delete('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const result = await pool.query('DELETE FROM social_links WHERE id = $1 RETURNING *', [id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Social link not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'delete_social_link', `Deleted social link: ${result.rows[0].title}`);
+        
+        res.json({ message: 'Social link deleted successfully' });
+    } catch (error) {
+        console.error('Delete social link error:', error);
+        res.status(500).json({ error: 'Failed to delete social link' });
+    }
+});
 
 // Create social link (ADMIN ONLY)
 router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
