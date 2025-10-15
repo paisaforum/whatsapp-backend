@@ -592,6 +592,91 @@ router.post('/admin/login', async (req, res) => {
     }
 });
 
+// ========================================
+// LOGOUT ROUTES (TOKEN BLACKLIST)
+// ========================================
+
+// Admin logout - blacklist token
+router.post('/admin/logout', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const token = req.headers.authorization.substring(7);
+        const decoded = jwt.verify(token, JWT_SECRET);
+        
+        // Calculate token expiry
+        const expiresAt = new Date(decoded.exp * 1000);
+        
+        // Add token to blacklist
+        await pool.query(
+            'INSERT INTO token_blacklist (token, admin_id, expires_at) VALUES ($1, $2, $3)',
+            [token, req.admin.adminId, expiresAt]
+        );
+        
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'logout', 'Logged out');
+        
+        res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({ error: 'Logout failed' });
+    }
+});
+
+// User logout - blacklist token
+router.post('/logout', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const token = req.headers.authorization.split(' ')[1];
+        const decoded = jwt.verify(token, JWT_SECRET);
+        
+        // Calculate token expiry
+        const expiresAt = new Date(decoded.exp * 1000);
+        
+        // Add token to blacklist
+        await pool.query(
+            'INSERT INTO token_blacklist (token, user_id, expires_at) VALUES ($1, $2, $3)',
+            [token, req.userId, expiresAt]
+        );
+        
+        res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({ error: 'Logout failed' });
+    }
+});
+
+// Cleanup expired tokens from blacklist (Super Admin only)
+router.post('/admin/cleanup-blacklist', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+        
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        const result = await pool.query(
+            'DELETE FROM token_blacklist WHERE expires_at < NOW()'
+        );
+        
+        await logAdminActivity(pool, req.admin.adminId, 'cleanup_blacklist', `Cleaned up ${result.rowCount} expired tokens`);
+        
+        res.json({ 
+            message: 'Cleanup completed', 
+            deletedCount: result.rowCount 
+        });
+    } catch (error) {
+        console.error('Cleanup error:', error);
+        res.status(500).json({ error: 'Cleanup failed' });
+    }
+});
+
+
 
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
