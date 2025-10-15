@@ -7,6 +7,13 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
+// Middleware to check if admin is super_admin
+const requireSuperAdmin = (req, res, next) => {
+    if (req.admin.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Access denied. Super admin only.' });
+    }
+    next();
+};
 
 // Permission checking middleware - FIXED VERSION
 const checkPermission = (requiredPermission) => {
@@ -877,7 +884,7 @@ const verify2FACode = async (pool, adminId, code) => {
 // ========================================
 
 // Get list of files in uploads folder
-router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
+router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -947,7 +954,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
 });
 
 // Delete a file
-router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, async (req, res) => {
+router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,requireSuperAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -993,7 +1000,7 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
 });
 
 // Bulk delete files
-router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, res) => {
+router.post('/admin/file-manager/bulk-delete', authenticateAdmin,requireSuperAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
