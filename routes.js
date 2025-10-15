@@ -954,7 +954,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
 });
 
 // Delete a file
-router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,requireSuperAdmin, async (req, res) => {
+router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, requireSuperAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -1000,7 +1000,7 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
 });
 
 // Bulk delete files
-router.post('/admin/file-manager/bulk-delete', authenticateAdmin,requireSuperAdmin, async (req, res) => {
+router.post('/admin/file-manager/bulk-delete', authenticateAdmin, requireSuperAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
@@ -2894,16 +2894,17 @@ router.get('/admin/social-links', authenticateAdmin, checkPermission('manage_soc
 router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { platform, title, url, icon, displayOrder } = req.body;
+        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
 
         if (!platform || !title || !url || !icon) {
             return res.status(400).json({ error: 'All fields required' });
         }
 
         const result = await pool.query(
-            `INSERT INTO social_links (platform, title, url, icon, display_order) 
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [platform, title, url, icon, displayOrder || 0]
+            `INSERT INTO social_links (platform, title, url, icon, icon_url, display_order, is_active, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+     RETURNING *`,
+            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0]
         );
 
 
@@ -2924,14 +2925,14 @@ router.put('/admin/update-social-link/:id', authenticateAdmin, checkPermission('
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
-        const { platform, title, url, icon, displayOrder, isActive } = req.body;
+        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
 
         const result = await pool.query(
             `UPDATE social_links 
-             SET platform = $1, title = $2, url = $3, icon = $4, 
-                 display_order = $5, is_active = $6 
-             WHERE id = $7 RETURNING *`,
-            [platform, title, url, icon, displayOrder, isActive, id]
+             SET platform = $1, title = $2, url = $3, icon = $4, icon_url = $5, display_order = $6
+             WHERE id = $7
+             RETURNING *`,
+            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0, id]
         );
 
         if (result.rows.length === 0) {
