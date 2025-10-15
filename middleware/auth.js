@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-change-in-production-1234567890abcdef';
 
 // Middleware to verify user token
-const authenticateUser = (req, res, next) => {
+const authenticateUser = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
         
@@ -18,39 +18,26 @@ const authenticateUser = (req, res, next) => {
             return res.status(401).json({ error: 'Authentication required' });
         }
         
-        // ⬇️ NEW: Check if token is blacklisted
+        // Check if token is blacklisted
         const pool = req.app?.get('db');
         if (pool) {
-            pool.query(
+            const blacklisted = await pool.query(
                 'SELECT id FROM token_blacklist WHERE token = $1 AND expires_at > NOW()',
                 [token]
-            ).then(result => {
-                if (result.rows.length > 0) {
-                    return res.status(401).json({ error: 'Token has been revoked' });
-                }
-                
-                // Verify token
-                const decoded = jwt.verify(token, JWT_SECRET);
-                
-                req.userId = decoded.userId;
-                req.whatsappNumber = decoded.whatsappNumber;
-                
-                next();
-            }).catch(err => {
-                console.error('Blacklist check error:', err);
-                // Continue even if blacklist check fails
-                const decoded = jwt.verify(token, JWT_SECRET);
-                req.userId = decoded.userId;
-                req.whatsappNumber = decoded.whatsappNumber;
-                next();
-            });
-        } else {
-            // If no pool available, skip blacklist check
-            const decoded = jwt.verify(token, JWT_SECRET);
-            req.userId = decoded.userId;
-            req.whatsappNumber = decoded.whatsappNumber;
-            next();
+            );
+            
+            if (blacklisted.rows.length > 0) {
+                return res.status(401).json({ error: 'Token has been revoked' });
+            }
         }
+        
+        // Verify token
+        const decoded = jwt.verify(token, JWT_SECRET);
+        
+        req.userId = decoded.userId;
+        req.whatsappNumber = decoded.whatsappNumber;
+        
+        next();
         
     } catch (error) {
         if (error.name === 'TokenExpiredError') {
@@ -59,7 +46,6 @@ const authenticateUser = (req, res, next) => {
         return res.status(401).json({ error: 'Invalid token' });
     }
 };
-
 
 const authenticateAdmin = async (req, res, next) => {
     try {
