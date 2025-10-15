@@ -2926,8 +2926,21 @@ router.post('/admin/social-links/upload-icon', authenticateAdmin, uploadSocialIc
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        const iconUrl = `/uploads/social-icons/${req.file.filename}`;
+        // Copy file to frontend uploads folder
+        const backendPath = req.file.path;
+        const frontendPath = path.join(__dirname, '../frontend/uploads/social-icons', req.file.filename);
+        
+        // Ensure frontend folder exists
+        const frontendDir = path.join(__dirname, '../frontend/uploads/social-icons');
+        if (!fs.existsSync(frontendDir)) {
+            fs.mkdirSync(frontendDir, { recursive: true });
+        }
+        
+        // Copy file from backend to frontend
+        fs.copyFileSync(backendPath, frontendPath);
 
+        const iconUrl = `/uploads/social-icons/${req.file.filename}`;
+        
         res.json({ iconUrl });
     } catch (error) {
         console.error('Icon upload error:', error);
