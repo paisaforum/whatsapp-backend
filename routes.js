@@ -2890,6 +2890,30 @@ router.get('/admin/social-links', authenticateAdmin, checkPermission('manage_soc
     }
 });
 
+
+// Upload social icon
+router.post('/admin/social-links/upload-icon', authenticateAdmin, hasPermission('manage_social_links'), upload.single('icon'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        // Move file to social-icons folder
+        const oldPath = req.file.path;
+        const newPath = path.join(__dirname, '../frontend/uploads/social-icons', req.file.filename);
+        
+        fs.renameSync(oldPath, newPath);
+
+        const iconUrl = `/uploads/social-icons/${req.file.filename}`;
+        
+        res.json({ iconUrl });
+    } catch (error) {
+        console.error('Icon upload error:', error);
+        res.status(500).json({ error: 'Failed to upload icon' });
+    }
+});
+
+
 // Create social link (ADMIN ONLY)
 router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
