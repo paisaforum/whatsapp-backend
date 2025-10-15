@@ -83,6 +83,33 @@ const bannerStorage = multer.diskStorage({
     }
 });
 
+// Storage for social icons
+const socialIconStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const folder = 'uploads/social-icons';
+        if (!fs.existsSync(folder)) {
+            fs.mkdirSync(folder, { recursive: true });
+        }
+        cb(null, folder);
+    },
+    filename: (req, file, cb) => {
+        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+        cb(null, uniqueName);
+    }
+});
+
+const uploadSocialIcon = multer({ 
+    storage: socialIconStorage,
+    limits: { fileSize: 1024 * 1024 }, // 1MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only PNG, JPG, and SVG files are allowed'));
+        }
+    }
+});
 // Offer storage
 const offerStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/offers/'),
