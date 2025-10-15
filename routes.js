@@ -677,6 +677,185 @@ router.post('/admin/cleanup-blacklist', authenticateAdmin, async (req, res) => {
 });
 
 
+
+// ========================================
+// TWO-FACTOR AUTHENTICATION (2FA) ROUTES
+// ========================================
+
+const speakeasy = require('speakeasy');
+const QRCode = require('qrcode');
+
+// Generate 2FA Secret and QR Code
+router.post('/admin/2fa/generate', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get admin info
+        const adminResult = await pool.query(
+            'SELECT username, two_fa_enabled FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        const admin = adminResult.rows[0];
+
+        // Generate secret
+        const secret = speakeasy.generateSecret({
+            name: `WhatsApp Admin (${admin.username})`,
+            issuer: 'vggamee.com'
+        });
+
+        // Generate QR code
+        const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url);
+
+        // Save secret (but don't enable yet)
+        await pool.query(
+            'UPDATE admins SET two_fa_secret = $1 WHERE id = $2',
+            [secret.base32, req.admin.adminId]
+        );
+
+        res.json({
+            secret: secret.base32,
+            qrCode: qrCodeUrl,
+            enabled: admin.two_fa_enabled
+        });
+
+    } catch (error) {
+        console.error('2FA generation error:', error);
+        res.status(500).json({ error: 'Failed to generate 2FA' });
+    }
+});
+
+// Enable 2FA (verify code first)
+router.post('/admin/2fa/enable', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { code } = req.body;
+
+        // Get admin's secret
+        const adminResult = await pool.query(
+            'SELECT two_fa_secret FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminResult.rows.length === 0 || !adminResult.rows[0].two_fa_secret) {
+            return res.status(400).json({ error: '2FA not set up. Generate secret first.' });
+        }
+
+        const secret = adminResult.rows[0].two_fa_secret;
+
+        // Verify the code
+        const verified = speakeasy.totp.verify({
+            secret: secret,
+            encoding: 'base32',
+            token: code,
+            window: 2
+        });
+
+        if (!verified) {
+            return res.status(400).json({ error: 'Invalid verification code' });
+        }
+
+        // Enable 2FA
+        await pool.query(
+            'UPDATE admins SET two_fa_enabled = true WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'enable_2fa', 'Enabled two-factor authentication');
+
+        res.json({ message: '2FA enabled successfully' });
+
+    } catch (error) {
+        console.error('2FA enable error:', error);
+        res.status(500).json({ error: 'Failed to enable 2FA' });
+    }
+});
+
+// Disable 2FA (verify password first)
+router.post('/admin/2fa/disable', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { password } = req.body;
+
+        // Verify password
+        const adminResult = await pool.query(
+            'SELECT password_hash FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (adminResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        const validPassword = await bcrypt.compare(password, adminResult.rows[0].password_hash);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Invalid password' });
+        }
+
+        // Disable 2FA and clear secret
+        await pool.query(
+            'UPDATE admins SET two_fa_enabled = false, two_fa_secret = NULL WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'disable_2fa', 'Disabled two-factor authentication');
+
+        res.json({ message: '2FA disabled successfully' });
+
+    } catch (error) {
+        console.error('2FA disable error:', error);
+        res.status(500).json({ error: 'Failed to disable 2FA' });
+    }
+});
+
+// Get 2FA status
+router.get('/admin/2fa/status', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const result = await pool.query(
+            'SELECT two_fa_enabled FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        res.json({ enabled: result.rows[0].two_fa_enabled || false });
+
+    } catch (error) {
+        console.error('2FA status error:', error);
+        res.status(500).json({ error: 'Failed to get 2FA status' });
+    }
+});
+
+// Verify 2FA code during login (called by login route)
+const verify2FACode = async (pool, adminId, code) => {
+    const result = await pool.query(
+        'SELECT two_fa_secret FROM admins WHERE id = $1',
+        [adminId]
+    );
+
+    if (result.rows.length === 0 || !result.rows[0].two_fa_secret) {
+        return false;
+    }
+
+    return speakeasy.totp.verify({
+        secret: result.rows[0].two_fa_secret,
+        encoding: 'base32',
+        token: code,
+        window: 2
+    });
+};
+
+
 // ========================================
 // FILE MANAGER ROUTES (SUPER ADMIN ONLY)
 // ========================================
