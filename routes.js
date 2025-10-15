@@ -677,6 +677,178 @@ router.post('/admin/cleanup-blacklist', authenticateAdmin, async (req, res) => {
 });
 
 
+// ========================================
+// FILE MANAGER ROUTES (SUPER ADMIN ONLY)
+// ========================================
+
+// Get list of files in uploads folder
+router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+        
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const fs = require('fs');
+        const path = require('path');
+        
+        const uploadsDir = './uploads';
+        const folders = ['banners', 'offers', 'submissions'];
+        
+        const filesByFolder = {};
+        let totalSize = 0;
+        let totalFiles = 0;
+        
+        for (const folder of folders) {
+            const folderPath = path.join(uploadsDir, folder);
+            
+            if (!fs.existsSync(folderPath)) {
+                filesByFolder[folder] = [];
+                continue;
+            }
+            
+            const files = fs.readdirSync(folderPath);
+            
+            filesByFolder[folder] = files.map(filename => {
+                const filePath = path.join(folderPath, filename);
+                const stats = fs.statSync(filePath);
+                
+                totalSize += stats.size;
+                totalFiles++;
+                
+                return {
+                    filename,
+                    folder,
+                    size: stats.size,
+                    created: stats.birthtime,
+                    modified: stats.mtime,
+                    url: `/uploads/${folder}/${filename}`
+                };
+            }).sort((a, b) => b.modified - a.modified); // Newest first
+        }
+        
+        res.json({
+            files: filesByFolder,
+            stats: {
+                totalFiles,
+                totalSize,
+                bannerCount: filesByFolder.banners.length,
+                offerCount: filesByFolder.offers.length,
+                submissionCount: filesByFolder.submissions.length
+            }
+        });
+        
+    } catch (error) {
+        console.error('File manager list error:', error);
+        res.status(500).json({ error: 'Failed to list files' });
+    }
+});
+
+// Delete a file
+router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+        
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const fs = require('fs');
+        const path = require('path');
+        const { folder, filename } = req.params;
+        
+        // Validate folder
+        const allowedFolders = ['banners', 'offers', 'submissions'];
+        if (!allowedFolders.includes(folder)) {
+            return res.status(400).json({ error: 'Invalid folder' });
+        }
+        
+        const filePath = path.join('./uploads', folder, filename);
+        
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+        
+        // Delete file
+        fs.unlinkSync(filePath);
+        
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'delete_file', `Deleted file: ${folder}/${filename}`);
+        
+        res.json({ message: 'File deleted successfully' });
+        
+    } catch (error) {
+        console.error('File delete error:', error);
+        res.status(500).json({ error: 'Failed to delete file' });
+    }
+});
+
+// Bulk delete files
+router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Check if super admin
+        const adminCheck = await pool.query(
+            'SELECT role FROM admins WHERE id = $1',
+            [req.admin.adminId]
+        );
+        
+        if (adminCheck.rows[0].role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const fs = require('fs');
+        const path = require('path');
+        const { files } = req.body; // Array of {folder, filename}
+        
+        if (!Array.isArray(files) || files.length === 0) {
+            return res.status(400).json({ error: 'No files specified' });
+        }
+        
+        let deletedCount = 0;
+        const allowedFolders = ['banners', 'offers', 'submissions'];
+        
+        for (const file of files) {
+            if (!allowedFolders.includes(file.folder)) continue;
+            
+            const filePath = path.join('./uploads', file.folder, file.filename);
+            
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                deletedCount++;
+            }
+        }
+        
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'bulk_delete_files', `Bulk deleted ${deletedCount} files`);
+        
+        res.json({ 
+            message: `Successfully deleted ${deletedCount} files`,
+            deletedCount 
+        });
+        
+    } catch (error) {
+        console.error('Bulk delete error:', error);
+        res.status(500).json({ error: 'Failed to delete files' });
+    }
+});
+
+
 
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
