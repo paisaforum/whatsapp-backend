@@ -3218,7 +3218,7 @@ router.delete('/admin/social-links/:id', authenticateAdmin, checkPermission('man
 // ==================== STREAK SYSTEM ROUTES ====================
 
 // Get user streak info
-router.get('/user-streak/:userId', authenticateToken, async (req, res) => {
+router.get('/user-streak/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
@@ -3241,7 +3241,7 @@ router.get('/user-streak/:userId', authenticateToken, async (req, res) => {
 });
 
 // Update streak (called after submission)
-router.post('/update-streak', authenticateToken, async (req, res) => {
+router.post('/update-streak', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.body;
@@ -3327,7 +3327,7 @@ router.post('/update-streak', authenticateToken, async (req, res) => {
 // ==================== REFERRAL SYSTEM ROUTES ====================
 
 // Get user referral info
-router.get('/referral-info/:userId', authenticateToken, async (req, res) => {
+router.get('/referral-info/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
@@ -3382,7 +3382,7 @@ router.get('/referral-info/:userId', authenticateToken, async (req, res) => {
 });
 
 // Apply referral code (during signup or later)
-router.post('/apply-referral', authenticateToken, async (req, res) => {
+router.post('/apply-referral', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, referralCode } = req.body;
@@ -3433,7 +3433,7 @@ router.post('/apply-referral', authenticateToken, async (req, res) => {
 });
 
 // Award referral commission (called when referred user earns points)
-router.post('/referral-commission', authenticateToken, async (req, res) => {
+router.post('/referral-commission', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, pointsEarned } = req.body;
@@ -3477,7 +3477,7 @@ router.post('/referral-commission', authenticateToken, async (req, res) => {
 // ==================== SPIN & EARN ROUTES ====================
 
 // Get user spin info
-router.get('/user-spins/:userId', authenticateToken, async (req, res) => {
+router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
@@ -3531,7 +3531,7 @@ router.get('/user-spins/:userId', authenticateToken, async (req, res) => {
 });
 
 // Spin the wheel
-router.post('/spin', authenticateToken, async (req, res) => {
+router.post('/spin', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, spinType } = req.body; // spinType: 'free' or 'bonus' or 'paid'
@@ -3621,7 +3621,7 @@ router.post('/spin', authenticateToken, async (req, res) => {
 });
 
 // Award bonus spin (called after X shares)
-router.post('/award-bonus-spin', authenticateToken, async (req, res) => {
+router.post('/award-bonus-spin', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.body;
@@ -3641,7 +3641,7 @@ router.post('/award-bonus-spin', authenticateToken, async (req, res) => {
 // ==================== MILESTONE SYSTEM ====================
 
 // Check and award milestones (called after submission)
-router.post('/check-milestones', authenticateToken, async (req, res) => {
+router.post('/check-milestones', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.body;
@@ -3711,7 +3711,7 @@ router.post('/check-milestones', authenticateToken, async (req, res) => {
 });
 
 // Get user milestones
-router.get('/user-milestones/:userId', authenticateToken, async (req, res) => {
+router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
@@ -3765,7 +3765,7 @@ router.get('/activities', async (req, res) => {
 });
 
 // Get activity details
-router.get('/activity/:id', authenticateToken, async (req, res) => {
+router.get('/activity/:id', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
@@ -3798,7 +3798,7 @@ router.get('/activity/:id', authenticateToken, async (req, res) => {
 });
 
 // Participate in activity
-router.post('/participate-activity', authenticateToken, async (req, res) => {
+router.post('/participate-activity', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, activityId } = req.body;
@@ -3842,7 +3842,7 @@ router.post('/participate-activity', authenticateToken, async (req, res) => {
 });
 
 // Get user's activity participations
-router.get('/user-activities/:userId', authenticateToken, async (req, res) => {
+router.get('/user-activities/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
