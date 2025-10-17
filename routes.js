@@ -379,7 +379,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             notifications: notifications.rows,
             pendingRedemption: pendingRedemption.rows[0] || null,
 
-               // ADD THESE NEW FIELDS:
+            // ADD THESE NEW FIELDS:
             streak: streakData.rows[0] || { current_streak: 0, longest_streak: 0 },
             referrals: referralData.rows[0] || { total_referrals: 0, total_commission: 0 },
             spins: spinData.rows[0] || { free_spins_today: 1, bonus_spins: 0, total_won: 0 },
@@ -4050,7 +4050,7 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
         const pool = req.app.get('db');
 
         const settings = await pool.query(
-            `SELECT * FROM settings 
+            `SELECT setting_key, setting_value FROM settings 
              WHERE setting_key LIKE 'streak_%' 
                 OR setting_key LIKE 'referral_%' 
                 OR setting_key LIKE 'spin_%'
@@ -4058,12 +4058,53 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
              ORDER BY setting_key`
         );
 
-        res.json({ settings: settings.rows });
+        // Convert array to flat object for frontend
+        const settingsObj = {};
+        settings.rows.forEach(row => {
+            settingsObj[row.setting_key] = row.setting_value;
+        });
+
+        res.json(settingsObj);  // ← Changed from { settings: ... }
     } catch (error) {
         console.error('Error fetching feature settings:', error);
         res.status(500).json({ error: 'Failed to fetch settings' });
     }
 });
+
+
+
+// Bulk update feature settings (NEW ROUTE)
+router.put('/admin/feature-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const updates = req.body;
+
+        // Update each setting
+        for (const [key, value] of Object.entries(updates)) {
+            await pool.query(
+                `UPDATE settings 
+                 SET setting_value = $1, updated_at = NOW() 
+                 WHERE setting_key = $2`,
+                [value.toString(), key]
+            );
+        }
+
+        await logAdminActivity(
+            pool,
+            req.admin.adminId,
+            'update_settings',
+            `Updated feature settings: ${Object.keys(updates).join(', ')}`
+        );
+
+        res.json({ message: 'Settings updated successfully' });
+    } catch (error) {
+        console.error('Error updating settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// KEEP the existing single-setting update route below
+// router.put('/admin/feature-settings/:key', ...)
 
 // Update feature setting
 router.put('/admin/feature-settings/:key', authenticateAdmin, async (req, res) => {
@@ -4090,28 +4131,17 @@ router.put('/admin/feature-settings/:key', authenticateAdmin, async (req, res) =
     }
 });
 
-// Get global statistics
-router.get('/admin/global-stats', authenticateAdmin, async (req, res) => {
+router.get('/admin/feature-analytics', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // Total streaks
-        const streakStats = await pool.query(
+        // Activity stats
+        const activityStats = await pool.query(
             `SELECT 
-                COUNT(*) as total_users_with_streaks,
-                AVG(current_streak) as avg_streak,
-                MAX(current_streak) as max_streak,
-                SUM(total_streak_bonuses) as total_bonuses_awarded
-             FROM user_streaks WHERE current_streak > 0`
-        );
-
-        // Referral stats
-        const referralStats = await pool.query(
-            `SELECT 
-                COUNT(*) as total_referrals,
-                COUNT(DISTINCT referrer_id) as active_referrers,
-                SUM(total_commission_earned) as total_commission
-             FROM referrals WHERE signup_bonus_awarded = true`
+                COUNT(DISTINCT activity_id) as total_activities,
+                COUNT(*) as total_participations,
+                SUM(points_earned) as total_points_awarded
+             FROM activity_participations`
         );
 
         // Spin stats
@@ -4123,6 +4153,25 @@ router.get('/admin/global-stats', authenticateAdmin, async (req, res) => {
              FROM user_spins WHERE total_spins > 0`
         );
 
+        // Referral stats
+        const referralStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_referrals,
+                COUNT(DISTINCT referrer_id) as active_referrers,
+                SUM(total_commission_earned) as total_commission
+             FROM referrals WHERE signup_bonus_awarded = true`
+        );
+
+        // Streak stats
+        const streakStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_users_with_streaks,
+                AVG(current_streak) as avg_streak,
+                MAX(current_streak) as max_streak,
+                SUM(total_streak_bonuses) as total_bonuses_awarded
+             FROM user_streaks WHERE current_streak > 0`
+        );
+
         // Milestone stats
         const milestoneStats = await pool.query(
             `SELECT 
@@ -4131,25 +4180,41 @@ router.get('/admin/global-stats', authenticateAdmin, async (req, res) => {
              FROM user_milestones`
         );
 
-        // Activity stats
-        const activityStats = await pool.query(
-            `SELECT 
-                COUNT(DISTINCT activity_id) as total_activities,
-                COUNT(*) as total_participations,
-                SUM(points_earned) as total_points_awarded
-             FROM activity_participations`
-        );
-
+        // Format response to match frontend expectations
         res.json({
-            streaks: streakStats.rows[0],
-            referrals: referralStats.rows[0],
-            spins: spinStats.rows[0],
-            milestones: milestoneStats.rows[0],
-            activities: activityStats.rows[0]
+            activities: {
+                total: parseInt(activityStats.rows[0]?.total_activities) || 0,
+                active: 0, // You can add this query if needed
+                totalParticipations: parseInt(activityStats.rows[0]?.total_participations) || 0,
+                pointsAwarded: parseInt(activityStats.rows[0]?.total_points_awarded) || 0
+            },
+            spins: {
+                totalSpins: parseInt(spinStats.rows[0]?.total_spins) || 0,
+                freeSpins: 0, // Add if you track this separately
+                bonusSpins: 0, // Add if you track this separately
+                pointsWon: parseInt(spinStats.rows[0]?.total_prizes) || 0
+            },
+            referrals: {
+                totalReferrals: parseInt(referralStats.rows[0]?.total_referrals) || 0,
+                activeReferrals: parseInt(referralStats.rows[0]?.active_referrers) || 0,
+                pointsAwarded: 0, // Calculate signup bonuses if needed
+                commissionPaid: parseInt(referralStats.rows[0]?.total_commission) || 0
+            },
+            streaks: {
+                activeStreaks: parseInt(streakStats.rows[0]?.total_users_with_streaks) || 0,
+                totalClaimed: 0, // Add if you track claims
+                pointsAwarded: parseInt(streakStats.rows[0]?.total_bonuses_awarded) || 0,
+                longestStreak: parseInt(streakStats.rows[0]?.max_streak) || 0
+            },
+            milestones: {
+                totalAchieved: parseInt(milestoneStats.rows[0]?.total_milestones_achieved) || 0,
+                pointsAwarded: parseInt(milestoneStats.rows[0]?.total_bonuses) || 0,
+                usersWithMilestones: 0 // Add distinct user count if needed
+            }
         });
     } catch (error) {
-        console.error('Error fetching global stats:', error);
-        res.status(500).json({ error: 'Failed to fetch stats' });
+        console.error('Error fetching feature analytics:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
     }
 });
 
