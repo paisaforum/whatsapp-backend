@@ -82,33 +82,7 @@ const bannerStorage = multer.diskStorage({
         cb(null, uniqueName);
     }
 });
-// Storage for social icons
-const socialIconStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const folder = 'uploads/social-icons';
-        if (!fs.existsSync(folder)) {
-            fs.mkdirSync(folder, { recursive: true });
-        }
-        cb(null, folder);
-    },
-    filename: (req, file, cb) => {
-        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
-        cb(null, uniqueName);
-    }
-});
 
-const uploadSocialIcon = multer({
-    storage: socialIconStorage,
-    limits: { fileSize: 1024 * 1024 }, // 1MB limit
-    fileFilter: (req, file, cb) => {
-        const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'];
-        if (allowedTypes.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only PNG, JPG, and SVG files are allowed'));
-        }
-    }
-});
 
 // Offer storage
 const offerStorage = multer.diskStorage({
@@ -929,7 +903,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
         const path = require('path');
 
         const uploadsDir = './uploads';
-        const folders = ['banners', 'offers', 'submissions', 'social-icons']; // ← ADDED 'social-icons'
+        const folders = ['banners', 'offers', 'submissions']; // ← ADDED 'social-icons'
 
         const filesByFolder = {};
         let totalSize = 0;
@@ -971,7 +945,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
                 bannerCount: filesByFolder.banners.length,
                 offerCount: filesByFolder.offers.length,
                 submissionCount: filesByFolder.submissions.length,
-                socialIconCount: filesByFolder['social-icons'].length  // ← ADDED THIS
+               
             }
         });
 
@@ -2882,7 +2856,6 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, checkPermission('ma
         res.status(500).json({ error: 'Failed to delete banner' });
     }
 });
-
 
 // ==================== SOCIAL LINKS ROUTES ====================
 
