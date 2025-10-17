@@ -2889,79 +2889,49 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, checkPermission('ma
 // Get all active social links (PUBLIC)
 router.get('/social-links', async (req, res) => {
     try {
-        const pool = req.app.get('db'); // ← CRITICAL: Get database pool
-
+        const pool = req.app.get('db');
         const result = await pool.query(
             'SELECT * FROM social_links WHERE is_active = true ORDER BY display_order ASC'
         );
-
         res.json({ links: result.rows });
     } catch (error) {
         console.error('Error fetching social links:', error);
-        res.json({ links: [] }); // Return empty array instead of crashing
+        res.json({ links: [] });
     }
 });
 
 // Get all social links for admin (ADMIN ONLY)
 router.get('/admin/social-links', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
-        const pool = req.app.get('db'); // ← CRITICAL: Get database pool
-
+        const pool = req.app.get('db');
         const result = await pool.query(
             'SELECT * FROM social_links ORDER BY display_order ASC'
         );
-
         res.json({ links: result.rows });
     } catch (error) {
         console.error('Error fetching admin social links:', error);
-        res.json({ links: [] }); // Return empty array instead of 500 error
+        res.json({ links: [] });
     }
 });
 
-
-// Upload social icon
-router.post('/admin/social-links/upload-icon', authenticateAdmin, uploadSocialIcon.single('icon'), async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-
-        // Copy file to frontend uploads folder
-        const backendPath = req.file.path;
-        const frontendPath = path.join(__dirname, '../frontend/uploads/social-icons', req.file.filename);
-        
-        // Ensure frontend folder exists
-        const frontendDir = path.join(__dirname, '../frontend/uploads/social-icons');
-        if (!fs.existsSync(frontendDir)) {
-            fs.mkdirSync(frontendDir, { recursive: true });
-        }
-        
-        // Copy file from backend to frontend
-        fs.copyFileSync(backendPath, frontendPath);
-
-        const iconUrl = `/uploads/social-icons/${req.file.filename}`;
-        
-        res.json({ iconUrl });
-    } catch (error) {
-        console.error('Icon upload error:', error);
-        res.status(500).json({ error: 'Failed to upload icon' });
-    }
-});
-
-// Create social link
-router.post('/admin/social-links', authenticateAdmin, async (req, res) => {
+// Create social link (ADMIN ONLY)
+router.post('/admin/social-links', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
+        const { platform, title, url, displayOrder } = req.body;
+
+        if (!platform || !title || !url) {
+            return res.status(400).json({ error: 'Platform, title, and URL are required' });
+        }
 
         const result = await pool.query(
             `INSERT INTO social_links (platform, title, url, icon, icon_url, display_order, is_active, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+             VALUES ($1, $2, $3, '', '', $4, true, NOW())
              RETURNING *`,
-            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0]
+            [platform, title, url, displayOrder || 0]
         );
 
-        await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title}`);
+        await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title} (${platform})`);
 
         res.json(result.rows[0]);
     } catch (error) {
@@ -2970,19 +2940,19 @@ router.post('/admin/social-links', authenticateAdmin, async (req, res) => {
     }
 });
 
-// Update social link
-router.put('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
+// Update social link (ADMIN ONLY)
+router.put('/admin/social-links/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
-        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
+        const { platform, title, url, displayOrder } = req.body;
 
         const result = await pool.query(
             `UPDATE social_links 
-             SET platform = $1, title = $2, url = $3, icon = $4, icon_url = $5, display_order = $6
-             WHERE id = $7
+             SET platform = $1, title = $2, url = $3, display_order = $4
+             WHERE id = $5
              RETURNING *`,
-            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0, id]
+            [platform, title, url, displayOrder || 0, id]
         );
 
         if (result.rows.length === 0) {
@@ -2998,8 +2968,8 @@ router.put('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
     }
 });
 
-// Toggle social link active status
-router.patch('/admin/social-links/:id/toggle', authenticateAdmin, async (req, res) => {
+// Toggle social link active status (ADMIN ONLY)
+router.patch('/admin/social-links/:id/toggle', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
@@ -3016,6 +2986,8 @@ router.patch('/admin/social-links/:id/toggle', authenticateAdmin, async (req, re
             return res.status(404).json({ error: 'Social link not found' });
         }
 
+        await logAdminActivity(pool, req.admin.adminId, 'toggle_social_link', `Toggled social link: ${result.rows[0].title}`);
+
         res.json(result.rows[0]);
     } catch (error) {
         console.error('Toggle social link error:', error);
@@ -3023,8 +2995,8 @@ router.patch('/admin/social-links/:id/toggle', authenticateAdmin, async (req, re
     }
 });
 
-// Delete social link
-router.delete('/admin/social-links/:id', authenticateAdmin, async (req, res) => {
+// Delete social link (ADMIN ONLY)
+router.delete('/admin/social-links/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
@@ -3040,121 +3012,6 @@ router.delete('/admin/social-links/:id', authenticateAdmin, async (req, res) => 
         res.json({ message: 'Social link deleted successfully' });
     } catch (error) {
         console.error('Delete social link error:', error);
-        res.status(500).json({ error: 'Failed to delete social link' });
-    }
-});
-
-
-// Create social link (ADMIN ONLY)
-router.post('/admin/create-social-link', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
-
-        if (!platform || !title || !url || !icon) {
-            return res.status(400).json({ error: 'All fields required' });
-        }
-
-        const result = await pool.query(
-            `INSERT INTO social_links (platform, title, url, icon, icon_url, display_order, is_active, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
-     RETURNING *`,
-            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0]
-        );
-
-
-        await logAdminActivity(pool, req.admin.adminId, 'create_social_link', `Created social link: ${title} (${platform})`);
-
-        res.json({
-            message: 'Social link created successfully',
-            link: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Error creating social link:', error);
-        res.status(500).json({ error: 'Failed to create social link' });
-    }
-});
-
-// Update social link (ADMIN ONLY)
-router.put('/admin/update-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { id } = req.params;
-        const { platform, title, url, icon, iconUrl, displayOrder } = req.body;
-
-        const result = await pool.query(
-            `UPDATE social_links 
-             SET platform = $1, title = $2, url = $3, icon = $4, icon_url = $5, display_order = $6
-             WHERE id = $7
-             RETURNING *`,
-            [platform, title, url, icon || '', iconUrl || '', displayOrder || 0, id]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Social link not found' });
-        }
-
-
-        await logAdminActivity(pool, req.admin.adminId, 'update_social_link', `Updated social link ID ${id}: ${title}`);
-
-
-
-        res.json({
-            message: 'Social link updated successfully',
-            link: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Error updating social link:', error);
-        res.status(500).json({ error: 'Failed to update social link' });
-    }
-});
-
-// Toggle social link status (ADMIN ONLY)
-router.post('/admin/toggle-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { id } = req.params;
-
-        const result = await pool.query(
-            `UPDATE social_links SET is_active = NOT is_active WHERE id = $1 RETURNING *`,
-            [id]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Social link not found' });
-        }
-
-        await logAdminActivity(pool, req.admin.adminId, 'toggle_social_link', `Toggled social link ID ${id} status`);
-        res.json({
-            message: 'Status toggled successfully',
-            link: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Error toggling social link:', error);
-        res.status(500).json({ error: 'Failed to toggle social link' });
-    }
-});
-
-// Delete social link (ADMIN ONLY)
-router.delete('/admin/delete-social-link/:id', authenticateAdmin, checkPermission('manage_social_links'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { id } = req.params;
-
-        const result = await pool.query(
-            'DELETE FROM social_links WHERE id = $1 RETURNING *',
-            [id]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Social link not found' });
-        }
-
-        await logAdminActivity(pool, req.admin.adminId, 'delete_social_link', `Deleted social link ID ${id}`);
-
-        res.json({ message: 'Social link deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting social link:', error);
         res.status(500).json({ error: 'Failed to delete social link' });
     }
 });
