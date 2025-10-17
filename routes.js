@@ -328,6 +328,32 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
+
+        // ==================== UPDATE EXISTING DASHBOARD ROUTE ====================
+
+        // Add these queries BEFORE the final res.json() in dashboard route:
+
+        // Get streak data
+        const streakData = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+
+        // Get referral data
+        const referralData = await pool.query(
+            `SELECT 
+        COUNT(*) as total_referrals,
+        SUM(total_commission_earned) as total_commission
+     FROM referrals WHERE referrer_id = $1`,
+            [userId]
+        );
+
+        // Get spin data
+        const spinData = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+
+        // Get milestone data
+        const milestoneData = await pool.query(
+            'SELECT * FROM user_milestones WHERE user_id = $1 ORDER BY milestone_value DESC LIMIT 5',
+            [userId]
+        );
+
         res.json({
             user: user.rows[0],
             offer: offer.rows[0] || null,
@@ -351,7 +377,13 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 totalPages: Math.ceil(totalRedemptions / limit)
             },
             notifications: notifications.rows,
-            pendingRedemption: pendingRedemption.rows[0] || null
+            pendingRedemption: pendingRedemption.rows[0] || null,
+
+               // ADD THESE NEW FIELDS:
+            streak: streakData.rows[0] || { current_streak: 0, longest_streak: 0 },
+            referrals: referralData.rows[0] || { total_referrals: 0, total_commission: 0 },
+            spins: spinData.rows[0] || { free_spins_today: 1, bonus_spins: 0, total_won: 0 },
+            milestones: milestoneData.rows
         });
     } catch (error) {
         console.error('Dashboard error:', error);
@@ -401,6 +433,196 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
        VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
             [userId, screenshotPaths, numbers.length, numbers.length]
         );
+
+
+
+        // ==================== EXISTING SUBMIT-PROOF ROUTE - ADD THIS CODE ====================
+
+        // Find this section in your existing submit-proof route:
+        // After: const submission = await pool.query('INSERT INTO submissions...')
+        // Add these automatic bonus triggers:
+
+        // 1. UPDATE STREAK
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+
+            if (streak.rows.length === 0) {
+                await pool.query(
+                    'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
+                    [userId, today]
+                );
+            } else {
+                const lastShareDate = streak.rows[0].last_share_date;
+                const currentStreak = streak.rows[0].current_streak;
+
+                if (lastShareDate !== today) {
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+                    let newStreak = 1;
+                    if (lastShareDate === yesterdayStr) {
+                        newStreak = currentStreak + 1;
+                    }
+
+                    // Get streak bonus settings
+                    const streakSettings = await pool.query(
+                        'SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)',
+                        ['streak_daily_bonus', 'streak_7day_bonus', 'streak_30day_bonus']
+                    );
+
+                    const settingsObj = {};
+                    streakSettings.rows.forEach(s => {
+                        settingsObj[s.setting_key] = parseInt(s.setting_value);
+                    });
+
+                    let bonus = settingsObj.streak_daily_bonus || 10;
+                    if (newStreak === 7) bonus = settingsObj.streak_7day_bonus || 50;
+                    if (newStreak === 30) bonus = settingsObj.streak_30day_bonus || 500;
+
+                    await pool.query(
+                        `UPDATE user_streaks 
+                 SET current_streak = $1, 
+                     longest_streak = GREATEST(longest_streak, $1),
+                     last_share_date = $2,
+                     total_streak_bonuses = total_streak_bonuses + $3,
+                     updated_at = NOW()
+                 WHERE user_id = $4`,
+                        [newStreak, today, bonus, userId]
+                    );
+
+                    if (bonus > 0) {
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Streak update error:', error);
+        }
+
+        // 2. CHECK MILESTONES
+        try {
+            const totalShares = await pool.query(
+                `SELECT COUNT(DISTINCT recipient_number) as total
+         FROM submission_recipients sr
+         JOIN submissions s ON sr.submission_id = s.id
+         WHERE s.user_id = $1 AND s.status = 'active'`,
+                [userId]
+            );
+
+            const shareCount = parseInt(totalShares.rows[0].total) || 0;
+
+            const milestones = await pool.query(
+                `SELECT * FROM settings 
+         WHERE setting_key LIKE 'milestone_%' 
+         ORDER BY setting_key`
+            );
+
+            const milestonesObj = {};
+            milestones.rows.forEach(m => {
+                const shares = m.setting_key.replace('milestone_', '').replace('_shares', '');
+                milestonesObj[shares] = parseInt(m.setting_value);
+            });
+
+            for (const [shares, bonus] of Object.entries(milestonesObj)) {
+                const milestoneShares = parseInt(shares);
+
+                if (shareCount >= milestoneShares) {
+                    const exists = await pool.query(
+                        'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
+                        [userId, 'shares', milestoneShares]
+                    );
+
+                    if (exists.rows.length === 0) {
+                        await pool.query(
+                            'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
+                            [userId, 'shares', milestoneShares, bonus]
+                        );
+
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Milestone check error:', error);
+        }
+
+        // 3. AWARD REFERRAL COMMISSION
+        try {
+            const user = await pool.query('SELECT referred_by_code FROM users WHERE id = $1', [userId]);
+
+            if (user.rows[0].referred_by_code) {
+                const referrer = await pool.query(
+                    'SELECT id FROM users WHERE referral_code = $1',
+                    [user.rows[0].referred_by_code]
+                );
+
+                if (referrer.rows.length > 0) {
+                    const commissionSettings = await pool.query(
+                        'SELECT setting_value FROM settings WHERE setting_key = $1',
+                        ['referral_commission_percent']
+                    );
+
+                    const commissionPercent = parseInt(commissionSettings.rows[0].setting_value) || 10;
+                    const commission = Math.floor(recipients.length * commissionPercent / 100);
+
+                    if (commission > 0) {
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+
+                        await pool.query(
+                            'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
+                            [commission, referrer.rows[0].id, userId]
+                        );
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Referral commission error:', error);
+        }
+
+        // 4. AWARD BONUS SPIN (every X shares)
+        try {
+            const spinSettings = await pool.query(
+                'SELECT setting_value FROM settings WHERE setting_key = $1',
+                ['spin_per_shares']
+            );
+
+            const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
+
+            const totalShares = await pool.query(
+                `SELECT COUNT(DISTINCT recipient_number) as total
+         FROM submission_recipients sr
+         JOIN submissions s ON sr.submission_id = s.id
+         WHERE s.user_id = $1 AND s.status = 'active'`,
+                [userId]
+            );
+
+            const shareCount = parseInt(totalShares.rows[0].total) || 0;
+
+            // Award bonus spin for every X shares
+            if (shareCount % sharesNeeded === 0 && shareCount > 0) {
+                let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+
+                if (userSpins.rows.length === 0) {
+                    await pool.query(
+                        'INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)',
+                        [userId]
+                    );
+                } else {
+                    await pool.query(
+                        'UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1',
+                        [userId]
+                    );
+                }
+            }
+        } catch (error) {
+            console.error('Bonus spin award error:', error);
+        }
+
+
+
+
 
         const submissionId = submission.rows[0].id;
 
@@ -945,7 +1167,7 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
                 bannerCount: filesByFolder.banners.length,
                 offerCount: filesByFolder.offers.length,
                 submissionCount: filesByFolder.submissions.length,
-               
+
             }
         });
 
@@ -2992,6 +3214,7 @@ router.delete('/admin/social-links/:id', authenticateAdmin, checkPermission('man
 
 
 
+
 // ==================== STREAK SYSTEM ROUTES ====================
 
 // Get user streak info
@@ -3001,7 +3224,7 @@ router.get('/user-streak/:userId', authenticateToken, async (req, res) => {
         const { userId } = req.params;
 
         let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
-        
+
         if (streak.rows.length === 0) {
             // Create initial streak record
             streak = await pool.query(
@@ -3024,10 +3247,10 @@ router.post('/update-streak', authenticateToken, async (req, res) => {
         const { userId } = req.body;
 
         const today = new Date().toISOString().split('T')[0];
-        
+
         // Get current streak
         let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
-        
+
         if (streak.rows.length === 0) {
             // Create new streak
             await pool.query(
@@ -3039,7 +3262,7 @@ router.post('/update-streak', authenticateToken, async (req, res) => {
 
         const lastShareDate = streak.rows[0].last_share_date;
         const currentStreak = streak.rows[0].current_streak;
-        
+
         // Check if already shared today
         if (lastShareDate === today) {
             return res.json({ message: 'Already shared today', currentStreak, bonus: 0 });
@@ -3049,16 +3272,16 @@ router.post('/update-streak', authenticateToken, async (req, res) => {
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
         const yesterdayStr = yesterday.toISOString().split('T')[0];
-        
+
         let newStreak = 1;
         if (lastShareDate === yesterdayStr) {
             newStreak = currentStreak + 1;
         }
 
         // Get settings
-        const settings = await pool.query('SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)', 
+        const settings = await pool.query('SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)',
             ['streak_daily_bonus', 'streak_7day_bonus', 'streak_30day_bonus']);
-        
+
         const settingsObj = {};
         settings.rows.forEach(s => {
             settingsObj[s.setting_key] = parseInt(s.setting_value);
@@ -3089,9 +3312,9 @@ router.post('/update-streak', authenticateToken, async (req, res) => {
             );
         }
 
-        res.json({ 
-            message: 'Streak updated', 
-            currentStreak: newStreak, 
+        res.json({
+            message: 'Streak updated',
+            currentStreak: newStreak,
             bonus,
             milestone: newStreak === 7 ? '7-day streak!' : newStreak === 30 ? '30-day streak!' : null
         });
@@ -3111,7 +3334,7 @@ router.get('/referral-info/:userId', authenticateToken, async (req, res) => {
 
         // Get user's referral code
         const user = await pool.query('SELECT referral_code, referred_by_code FROM users WHERE id = $1', [userId]);
-        
+
         // Get referral stats
         const stats = await pool.query(
             `SELECT 
@@ -3261,7 +3484,7 @@ router.get('/user-spins/:userId', authenticateToken, async (req, res) => {
         const today = new Date().toISOString().split('T')[0];
 
         let spins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
-        
+
         if (spins.rows.length === 0) {
             // Create initial spin record
             spins = await pool.query(
@@ -3386,8 +3609,8 @@ router.post('/spin', authenticateToken, async (req, res) => {
             [userId, prize, spinType]
         );
 
-        res.json({ 
-            message: 'Spin successful!', 
+        res.json({
+            message: 'Spin successful!',
             prize,
             prizeIndex
         });
@@ -3451,7 +3674,7 @@ router.post('/check-milestones', authenticateToken, async (req, res) => {
         const awarded = [];
         for (const [shares, bonus] of Object.entries(milestonesObj)) {
             const milestoneShares = parseInt(shares);
-            
+
             if (shareCount >= milestoneShares) {
                 // Check if already awarded
                 const exists = await pool.query(
@@ -3476,7 +3699,7 @@ router.post('/check-milestones', authenticateToken, async (req, res) => {
             }
         }
 
-        res.json({ 
+        res.json({
             message: awarded.length > 0 ? 'Milestones achieved!' : 'No new milestones',
             awarded,
             currentShares: shareCount
@@ -3549,7 +3772,7 @@ router.get('/activity/:id', authenticateToken, async (req, res) => {
         const userId = req.user?.userId;
 
         const activity = await pool.query('SELECT * FROM activities WHERE id = $1', [id]);
-        
+
         if (activity.rows.length === 0) {
             return res.status(404).json({ error: 'Activity not found' });
         }
@@ -3608,9 +3831,9 @@ router.post('/participate-activity', authenticateToken, async (req, res) => {
             [activity.rows[0].points_reward, userId]
         );
 
-        res.json({ 
-            message: 'Activity completed!', 
-            pointsEarned: activity.rows[0].points_reward 
+        res.json({
+            message: 'Activity completed!',
+            pointsEarned: activity.rows[0].points_reward
         });
     } catch (error) {
         console.error('Error participating in activity:', error);
@@ -3681,16 +3904,16 @@ router.get('/admin/activities', authenticateAdmin, async (req, res) => {
 router.post('/admin/activities', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { 
-            title, 
-            description, 
-            bannerImageUrl, 
-            activityType, 
-            pointsReward, 
-            startDate, 
+        const {
+            title,
+            description,
+            bannerImageUrl,
+            activityType,
+            pointsReward,
+            startDate,
             endDate,
             maxParticipations,
-            displayOrder 
+            displayOrder
         } = req.body;
 
         const result = await pool.query(
@@ -3715,17 +3938,17 @@ router.put('/admin/activities/:id', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
-        const { 
-            title, 
-            description, 
-            bannerImageUrl, 
-            activityType, 
-            pointsReward, 
-            startDate, 
+        const {
+            title,
+            description,
+            bannerImageUrl,
+            activityType,
+            pointsReward,
+            startDate,
             endDate,
             maxParticipations,
             displayOrder,
-            isActive 
+            isActive
         } = req.body;
 
         const result = await pool.query(
