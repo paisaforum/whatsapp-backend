@@ -2989,4 +2989,674 @@ router.delete('/admin/social-links/:id', authenticateAdmin, checkPermission('man
     }
 });
 
+
+
+
+// ==================== STREAK SYSTEM ROUTES ====================
+
+// Get user streak info
+router.get('/user-streak/:userId', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+        
+        if (streak.rows.length === 0) {
+            // Create initial streak record
+            streak = await pool.query(
+                'INSERT INTO user_streaks (user_id) VALUES ($1) RETURNING *',
+                [userId]
+            );
+        }
+
+        res.json({ streak: streak.rows[0] });
+    } catch (error) {
+        console.error('Error fetching streak:', error);
+        res.status(500).json({ error: 'Failed to fetch streak' });
+    }
+});
+
+// Update streak (called after submission)
+router.post('/update-streak', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.body;
+
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Get current streak
+        let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+        
+        if (streak.rows.length === 0) {
+            // Create new streak
+            await pool.query(
+                'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
+                [userId, today]
+            );
+            return res.json({ message: 'Streak started', currentStreak: 1, bonus: 0 });
+        }
+
+        const lastShareDate = streak.rows[0].last_share_date;
+        const currentStreak = streak.rows[0].current_streak;
+        
+        // Check if already shared today
+        if (lastShareDate === today) {
+            return res.json({ message: 'Already shared today', currentStreak, bonus: 0 });
+        }
+
+        // Check if streak continues
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        
+        let newStreak = 1;
+        if (lastShareDate === yesterdayStr) {
+            newStreak = currentStreak + 1;
+        }
+
+        // Get settings
+        const settings = await pool.query('SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)', 
+            ['streak_daily_bonus', 'streak_7day_bonus', 'streak_30day_bonus']);
+        
+        const settingsObj = {};
+        settings.rows.forEach(s => {
+            settingsObj[s.setting_key] = parseInt(s.setting_value);
+        });
+
+        // Calculate bonus
+        let bonus = settingsObj.streak_daily_bonus || 10;
+        if (newStreak === 7) bonus = settingsObj.streak_7day_bonus || 50;
+        if (newStreak === 30) bonus = settingsObj.streak_30day_bonus || 500;
+
+        // Update streak
+        await pool.query(
+            `UPDATE user_streaks 
+             SET current_streak = $1, 
+                 longest_streak = GREATEST(longest_streak, $1),
+                 last_share_date = $2,
+                 total_streak_bonuses = total_streak_bonuses + $3,
+                 updated_at = NOW()
+             WHERE user_id = $4`,
+            [newStreak, today, bonus, userId]
+        );
+
+        // Award bonus points
+        if (bonus > 0) {
+            await pool.query(
+                'UPDATE users SET points = points + $1 WHERE id = $2',
+                [bonus, userId]
+            );
+        }
+
+        res.json({ 
+            message: 'Streak updated', 
+            currentStreak: newStreak, 
+            bonus,
+            milestone: newStreak === 7 ? '7-day streak!' : newStreak === 30 ? '30-day streak!' : null
+        });
+    } catch (error) {
+        console.error('Error updating streak:', error);
+        res.status(500).json({ error: 'Failed to update streak' });
+    }
+});
+
+// ==================== REFERRAL SYSTEM ROUTES ====================
+
+// Get user referral info
+router.get('/referral-info/:userId', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get user's referral code
+        const user = await pool.query('SELECT referral_code, referred_by_code FROM users WHERE id = $1', [userId]);
+        
+        // Get referral stats
+        const stats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_referrals,
+                SUM(CASE WHEN signup_bonus_awarded = true THEN 1 ELSE 0 END) as successful_referrals,
+                SUM(total_commission_earned) as total_commission
+             FROM referrals 
+             WHERE referrer_id = $1`,
+            [userId]
+        );
+
+        // Get referred users list (paginated)
+        const referrals = await pool.query(
+            `SELECT r.*, u.whatsapp_number, u.points, u.created_at as signup_date
+             FROM referrals r
+             JOIN users u ON r.referred_id = u.id
+             WHERE r.referrer_id = $1
+             ORDER BY r.created_at DESC
+             LIMIT 10`,
+            [userId]
+        );
+
+        // Get settings
+        const settings = await pool.query(
+            'SELECT * FROM settings WHERE setting_key IN ($1, $2)',
+            ['referral_signup_bonus', 'referral_commission_percent']
+        );
+
+        const settingsObj = {};
+        settings.rows.forEach(s => {
+            settingsObj[s.setting_key] = s.setting_value;
+        });
+
+        res.json({
+            referralCode: user.rows[0].referral_code,
+            referredBy: user.rows[0].referred_by_code,
+            stats: stats.rows[0],
+            referrals: referrals.rows,
+            settings: settingsObj
+        });
+    } catch (error) {
+        console.error('Error fetching referral info:', error);
+        res.status(500).json({ error: 'Failed to fetch referral info' });
+    }
+});
+
+// Apply referral code (during signup or later)
+router.post('/apply-referral', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, referralCode } = req.body;
+
+        // Check if user already used a referral code
+        const user = await pool.query('SELECT referred_by_code FROM users WHERE id = $1', [userId]);
+        if (user.rows[0].referred_by_code) {
+            return res.status(400).json({ error: 'You have already used a referral code' });
+        }
+
+        // Find referrer
+        const referrer = await pool.query('SELECT id FROM users WHERE referral_code = $1', [referralCode]);
+        if (referrer.rows.length === 0) {
+            return res.status(404).json({ error: 'Invalid referral code' });
+        }
+
+        const referrerId = referrer.rows[0].id;
+
+        // Can't refer yourself
+        if (referrerId === parseInt(userId)) {
+            return res.status(400).json({ error: 'Cannot use your own referral code' });
+        }
+
+        // Get bonus amount
+        const settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['referral_signup_bonus']);
+        const bonus = parseInt(settings.rows[0].setting_value) || 100;
+
+        // Create referral record
+        await pool.query(
+            `INSERT INTO referrals (referrer_id, referred_id, referral_code, signup_bonus_awarded)
+             VALUES ($1, $2, $3, true)`,
+            [referrerId, userId, referralCode]
+        );
+
+        // Update user's referred_by_code
+        await pool.query('UPDATE users SET referred_by_code = $1 WHERE id = $2', [referralCode, userId]);
+
+        // Award bonus to referrer
+        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, referrerId]);
+
+        await logAdminActivity(pool, null, 'referral_bonus', `User ${userId} used referral code ${referralCode}. Referrer ${referrerId} got ${bonus} points`);
+
+        res.json({ message: `Referral applied! Your referrer got ${bonus} points`, bonus });
+    } catch (error) {
+        console.error('Error applying referral:', error);
+        res.status(500).json({ error: 'Failed to apply referral code' });
+    }
+});
+
+// Award referral commission (called when referred user earns points)
+router.post('/referral-commission', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, pointsEarned } = req.body;
+
+        // Check if user was referred
+        const user = await pool.query('SELECT referred_by_code FROM users WHERE id = $1', [userId]);
+        if (!user.rows[0].referred_by_code) {
+            return res.json({ message: 'No referrer' });
+        }
+
+        // Find referrer
+        const referrer = await pool.query('SELECT id FROM users WHERE referral_code = $1', [user.rows[0].referred_by_code]);
+        if (referrer.rows.length === 0) {
+            return res.json({ message: 'Referrer not found' });
+        }
+
+        // Get commission percentage
+        const settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['referral_commission_percent']);
+        const commissionPercent = parseInt(settings.rows[0].setting_value) || 10;
+
+        const commission = Math.floor(pointsEarned * commissionPercent / 100);
+
+        if (commission > 0) {
+            // Award commission
+            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+
+            // Update referral record
+            await pool.query(
+                'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
+                [commission, referrer.rows[0].id, userId]
+            );
+        }
+
+        res.json({ message: 'Commission awarded', commission });
+    } catch (error) {
+        console.error('Error awarding commission:', error);
+        res.status(500).json({ error: 'Failed to award commission' });
+    }
+});
+
+// ==================== SPIN & EARN ROUTES ====================
+
+// Get user spin info
+router.get('/user-spins/:userId', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const today = new Date().toISOString().split('T')[0];
+
+        let spins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+        
+        if (spins.rows.length === 0) {
+            // Create initial spin record
+            spins = await pool.query(
+                'INSERT INTO user_spins (user_id, last_spin_date) VALUES ($1, $2) RETURNING *',
+                [userId, today]
+            );
+        } else {
+            // Reset free spins if new day
+            if (spins.rows[0].last_spin_date !== today) {
+                await pool.query(
+                    'UPDATE user_spins SET free_spins_today = 1, last_spin_date = $1 WHERE user_id = $2',
+                    [today, userId]
+                );
+                spins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+            }
+        }
+
+        // Get settings
+        const settings = await pool.query(
+            'SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)',
+            ['spin_free_per_day', 'spin_cost_points', 'spin_prizes']
+        );
+
+        const settingsObj = {};
+        settings.rows.forEach(s => {
+            settingsObj[s.setting_key] = s.setting_value;
+        });
+
+        // Get recent spin history
+        const history = await pool.query(
+            'SELECT * FROM spin_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10',
+            [userId]
+        );
+
+        res.json({
+            spins: spins.rows[0],
+            settings: settingsObj,
+            history: history.rows
+        });
+    } catch (error) {
+        console.error('Error fetching spin info:', error);
+        res.status(500).json({ error: 'Failed to fetch spin info' });
+    }
+});
+
+// Spin the wheel
+router.post('/spin', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, spinType } = req.body; // spinType: 'free' or 'bonus' or 'paid'
+        const today = new Date().toISOString().split('T')[0];
+
+        // Get user spins
+        const userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+        if (userSpins.rows.length === 0) {
+            return res.status(400).json({ error: 'Spin data not found' });
+        }
+
+        const spinData = userSpins.rows[0];
+
+        // Check if user has spins available
+        if (spinType === 'free' && spinData.free_spins_today <= 0) {
+            return res.status(400).json({ error: 'No free spins available today' });
+        }
+
+        if (spinType === 'bonus' && spinData.bonus_spins <= 0) {
+            return res.status(400).json({ error: 'No bonus spins available' });
+        }
+
+        if (spinType === 'paid') {
+            // Deduct points for paid spin
+            const settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_cost_points']);
+            const cost = parseInt(settings.rows[0].setting_value) || 50;
+
+            const user = await pool.query('SELECT points FROM users WHERE id = $1', [userId]);
+            if (user.rows[0].points < cost) {
+                return res.status(400).json({ error: 'Insufficient points' });
+            }
+
+            await pool.query('UPDATE users SET points = points - $1 WHERE id = $2', [cost, userId]);
+        }
+
+        // Get prize pool
+        const settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_prizes']);
+        const prizes = JSON.parse(settings.rows[0].setting_value);
+
+        // Randomly select prize (weighted towards lower values)
+        const weights = [30, 25, 20, 15, 7, 2, 1]; // Higher chance for smaller prizes
+        let totalWeight = weights.reduce((a, b) => a + b, 0);
+        let random = Math.random() * totalWeight;
+        let prizeIndex = 0;
+
+        for (let i = 0; i < weights.length; i++) {
+            random -= weights[i];
+            if (random <= 0) {
+                prizeIndex = i;
+                break;
+            }
+        }
+
+        const prize = prizes[prizeIndex];
+
+        // Award prize
+        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
+
+        // Update spin counts
+        if (spinType === 'free') {
+            await pool.query('UPDATE user_spins SET free_spins_today = free_spins_today - 1 WHERE user_id = $1', [userId]);
+        } else if (spinType === 'bonus') {
+            await pool.query('UPDATE user_spins SET bonus_spins = bonus_spins - 1 WHERE user_id = $1', [userId]);
+        }
+
+        // Update totals
+        await pool.query(
+            'UPDATE user_spins SET total_spins = total_spins + 1, total_won = total_won + $1 WHERE user_id = $2',
+            [prize, userId]
+        );
+
+        // Record spin history
+        await pool.query(
+            'INSERT INTO spin_history (user_id, prize_amount, spin_type) VALUES ($1, $2, $3)',
+            [userId, prize, spinType]
+        );
+
+        res.json({ 
+            message: 'Spin successful!', 
+            prize,
+            prizeIndex
+        });
+    } catch (error) {
+        console.error('Error spinning:', error);
+        res.status(500).json({ error: 'Failed to spin' });
+    }
+});
+
+// Award bonus spin (called after X shares)
+router.post('/award-bonus-spin', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.body;
+
+        await pool.query(
+            'UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1',
+            [userId]
+        );
+
+        res.json({ message: 'Bonus spin awarded!' });
+    } catch (error) {
+        console.error('Error awarding bonus spin:', error);
+        res.status(500).json({ error: 'Failed to award bonus spin' });
+    }
+});
+
+// ==================== MILESTONE SYSTEM ====================
+
+// Check and award milestones (called after submission)
+router.post('/check-milestones', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.body;
+
+        // Get total shares (recipients) count
+        const totalShares = await pool.query(
+            `SELECT COUNT(DISTINCT recipient_number) as total
+             FROM submission_recipients sr
+             JOIN submissions s ON sr.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'`,
+            [userId]
+        );
+
+        const shareCount = parseInt(totalShares.rows[0].total) || 0;
+
+        // Get milestone settings
+        const milestones = await pool.query(
+            `SELECT * FROM settings 
+             WHERE setting_key LIKE 'milestone_%' 
+             ORDER BY setting_key`
+        );
+
+        const milestonesObj = {};
+        milestones.rows.forEach(m => {
+            const shares = m.setting_key.replace('milestone_', '').replace('_shares', '');
+            milestonesObj[shares] = parseInt(m.setting_value);
+        });
+
+        // Check each milestone
+        const awarded = [];
+        for (const [shares, bonus] of Object.entries(milestonesObj)) {
+            const milestoneShares = parseInt(shares);
+            
+            if (shareCount >= milestoneShares) {
+                // Check if already awarded
+                const exists = await pool.query(
+                    'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
+                    [userId, 'shares', milestoneShares]
+                );
+
+                if (exists.rows.length === 0) {
+                    // Award milestone
+                    await pool.query(
+                        'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
+                        [userId, 'shares', milestoneShares, bonus]
+                    );
+
+                    await pool.query(
+                        'UPDATE users SET points = points + $1 WHERE id = $2',
+                        [bonus, userId]
+                    );
+
+                    awarded.push({ milestone: milestoneShares, bonus });
+                }
+            }
+        }
+
+        res.json({ 
+            message: awarded.length > 0 ? 'Milestones achieved!' : 'No new milestones',
+            awarded,
+            currentShares: shareCount
+        });
+    } catch (error) {
+        console.error('Error checking milestones:', error);
+        res.status(500).json({ error: 'Failed to check milestones' });
+    }
+});
+
+// Get user milestones
+router.get('/user-milestones/:userId', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        const milestones = await pool.query(
+            'SELECT * FROM user_milestones WHERE user_id = $1 ORDER BY milestone_value ASC',
+            [userId]
+        );
+
+        // Get current share count
+        const totalShares = await pool.query(
+            `SELECT COUNT(DISTINCT recipient_number) as total
+             FROM submission_recipients sr
+             JOIN submissions s ON sr.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'`,
+            [userId]
+        );
+
+        res.json({
+            milestones: milestones.rows,
+            currentShares: parseInt(totalShares.rows[0].total) || 0
+        });
+    } catch (error) {
+        console.error('Error fetching milestones:', error);
+        res.status(500).json({ error: 'Failed to fetch milestones' });
+    }
+});
+
+// ==================== ACTIVITIES ROUTES ====================
+
+// Get all active activities (PUBLIC)
+router.get('/activities', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const now = new Date().toISOString();
+
+        const activities = await pool.query(
+            `SELECT * FROM activities 
+             WHERE is_active = true 
+             AND (start_date IS NULL OR start_date <= $1)
+             AND (end_date IS NULL OR end_date >= $1)
+             ORDER BY display_order ASC, created_at DESC`,
+            [now]
+        );
+
+        res.json({ activities: activities.rows });
+    } catch (error) {
+        console.error('Error fetching activities:', error);
+        res.json({ activities: [] });
+    }
+});
+
+// Get activity details
+router.get('/activity/:id', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const userId = req.user?.userId;
+
+        const activity = await pool.query('SELECT * FROM activities WHERE id = $1', [id]);
+        
+        if (activity.rows.length === 0) {
+            return res.status(404).json({ error: 'Activity not found' });
+        }
+
+        // Check if user participated
+        let participation = null;
+        if (userId) {
+            const participationData = await pool.query(
+                'SELECT * FROM activity_participations WHERE user_id = $1 AND activity_id = $2',
+                [userId, id]
+            );
+            participation = participationData.rows[0] || null;
+        }
+
+        res.json({
+            activity: activity.rows[0],
+            participation
+        });
+    } catch (error) {
+        console.error('Error fetching activity:', error);
+        res.status(500).json({ error: 'Failed to fetch activity' });
+    }
+});
+
+// Participate in activity
+router.post('/participate-activity', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, activityId } = req.body;
+
+        // Check if activity exists
+        const activity = await pool.query('SELECT * FROM activities WHERE id = $1', [activityId]);
+        if (activity.rows.length === 0) {
+            return res.status(404).json({ error: 'Activity not found' });
+        }
+
+        // Check if already participated
+        const participated = await pool.query(
+            'SELECT * FROM activity_participations WHERE user_id = $1 AND activity_id = $2',
+            [userId, activityId]
+        );
+
+        if (participated.rows.length >= activity.rows[0].max_participations) {
+            return res.status(400).json({ error: 'Maximum participations reached' });
+        }
+
+        // Create participation
+        await pool.query(
+            'INSERT INTO activity_participations (user_id, activity_id, points_earned, completed) VALUES ($1, $2, $3, $4)',
+            [userId, activityId, activity.rows[0].points_reward, true]
+        );
+
+        // Award points
+        await pool.query(
+            'UPDATE users SET points = points + $1 WHERE id = $2',
+            [activity.rows[0].points_reward, userId]
+        );
+
+        res.json({ 
+            message: 'Activity completed!', 
+            pointsEarned: activity.rows[0].points_reward 
+        });
+    } catch (error) {
+        console.error('Error participating in activity:', error);
+        res.status(500).json({ error: 'Failed to participate' });
+    }
+});
+
+// Get user's activity participations
+router.get('/user-activities/:userId', authenticateToken, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { page = 1, limit = 10 } = req.query;
+        const offset = (page - 1) * limit;
+
+        const participations = await pool.query(
+            `SELECT ap.*, a.title, a.description, a.banner_image_url
+             FROM activity_participations ap
+             JOIN activities a ON ap.activity_id = a.id
+             WHERE ap.user_id = $1
+             ORDER BY ap.participated_at DESC
+             LIMIT $2 OFFSET $3`,
+            [userId, limit, offset]
+        );
+
+        const total = await pool.query(
+            'SELECT COUNT(*) FROM activity_participations WHERE user_id = $1',
+            [userId]
+        );
+
+        res.json({
+            participations: participations.rows,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: parseInt(total.rows[0].count),
+                totalPages: Math.ceil(total.rows[0].count / limit)
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching user activities:', error);
+        res.status(500).json({ error: 'Failed to fetch activities' });
+    }
+});
+
+
+
+
 module.exports = router;
