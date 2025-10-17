@@ -3659,4 +3659,277 @@ router.get('/user-activities/:userId', authenticateToken, async (req, res) => {
 
 
 
+// ==================== ADMIN ACTIVITIES ROUTES ====================
+
+// Get all activities for admin
+router.get('/admin/activities', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const activities = await pool.query(
+            'SELECT * FROM activities ORDER BY display_order ASC, created_at DESC'
+        );
+
+        res.json({ activities: activities.rows });
+    } catch (error) {
+        console.error('Error fetching activities:', error);
+        res.status(500).json({ error: 'Failed to fetch activities' });
+    }
+});
+
+// Create activity
+router.post('/admin/activities', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { 
+            title, 
+            description, 
+            bannerImageUrl, 
+            activityType, 
+            pointsReward, 
+            startDate, 
+            endDate,
+            maxParticipations,
+            displayOrder 
+        } = req.body;
+
+        const result = await pool.query(
+            `INSERT INTO activities (
+                title, description, banner_image_url, activity_type, 
+                points_reward, start_date, end_date, max_participations, display_order
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [title, description, bannerImageUrl, activityType, pointsReward, startDate, endDate, maxParticipations, displayOrder || 0]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'create_activity', `Created activity: ${title}`);
+
+        res.json({ message: 'Activity created successfully', activity: result.rows[0] });
+    } catch (error) {
+        console.error('Error creating activity:', error);
+        res.status(500).json({ error: 'Failed to create activity' });
+    }
+});
+
+// Update activity
+router.put('/admin/activities/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { 
+            title, 
+            description, 
+            bannerImageUrl, 
+            activityType, 
+            pointsReward, 
+            startDate, 
+            endDate,
+            maxParticipations,
+            displayOrder,
+            isActive 
+        } = req.body;
+
+        const result = await pool.query(
+            `UPDATE activities 
+             SET title = $1, description = $2, banner_image_url = $3, 
+                 activity_type = $4, points_reward = $5, start_date = $6, 
+                 end_date = $7, max_participations = $8, display_order = $9,
+                 is_active = $10, updated_at = NOW()
+             WHERE id = $11 RETURNING *`,
+            [title, description, bannerImageUrl, activityType, pointsReward, startDate, endDate, maxParticipations, displayOrder, isActive, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Activity not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_activity', `Updated activity: ${title}`);
+
+        res.json({ message: 'Activity updated successfully', activity: result.rows[0] });
+    } catch (error) {
+        console.error('Error updating activity:', error);
+        res.status(500).json({ error: 'Failed to update activity' });
+    }
+});
+
+// Toggle activity status
+router.patch('/admin/activities/:id/toggle', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const result = await pool.query(
+            'UPDATE activities SET is_active = NOT is_active WHERE id = $1 RETURNING *',
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Activity not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'toggle_activity', `Toggled activity ID ${id}`);
+
+        res.json({ message: 'Activity status toggled', activity: result.rows[0] });
+    } catch (error) {
+        console.error('Error toggling activity:', error);
+        res.status(500).json({ error: 'Failed to toggle activity' });
+    }
+});
+
+// Delete activity
+router.delete('/admin/activities/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const result = await pool.query('DELETE FROM activities WHERE id = $1 RETURNING *', [id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Activity not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'delete_activity', `Deleted activity: ${result.rows[0].title}`);
+
+        res.json({ message: 'Activity deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting activity:', error);
+        res.status(500).json({ error: 'Failed to delete activity' });
+    }
+});
+
+// Get activity statistics
+router.get('/admin/activities/:id/stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const stats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_participations,
+                COUNT(DISTINCT user_id) as unique_users,
+                SUM(points_earned) as total_points_awarded
+             FROM activity_participations 
+             WHERE activity_id = $1`,
+            [id]
+        );
+
+        res.json({ stats: stats.rows[0] });
+    } catch (error) {
+        console.error('Error fetching activity stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+// ==================== ADMIN SETTINGS ROUTES ====================
+
+// Get all feature settings
+router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const settings = await pool.query(
+            `SELECT * FROM settings 
+             WHERE setting_key LIKE 'streak_%' 
+                OR setting_key LIKE 'referral_%' 
+                OR setting_key LIKE 'spin_%'
+                OR setting_key LIKE 'milestone_%'
+             ORDER BY setting_key`
+        );
+
+        res.json({ settings: settings.rows });
+    } catch (error) {
+        console.error('Error fetching feature settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// Update feature setting
+router.put('/admin/feature-settings/:key', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { key } = req.params;
+        const { value, description } = req.body;
+
+        const result = await pool.query(
+            'UPDATE settings SET setting_value = $1, description = $2, updated_at = NOW() WHERE setting_key = $3 RETURNING *',
+            [value, description, key]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Setting not found' });
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_setting', `Updated ${key} to ${value}`);
+
+        res.json({ message: 'Setting updated successfully', setting: result.rows[0] });
+    } catch (error) {
+        console.error('Error updating setting:', error);
+        res.status(500).json({ error: 'Failed to update setting' });
+    }
+});
+
+// Get global statistics
+router.get('/admin/global-stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Total streaks
+        const streakStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_users_with_streaks,
+                AVG(current_streak) as avg_streak,
+                MAX(current_streak) as max_streak,
+                SUM(total_streak_bonuses) as total_bonuses_awarded
+             FROM user_streaks WHERE current_streak > 0`
+        );
+
+        // Referral stats
+        const referralStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_referrals,
+                COUNT(DISTINCT referrer_id) as active_referrers,
+                SUM(total_commission_earned) as total_commission
+             FROM referrals WHERE signup_bonus_awarded = true`
+        );
+
+        // Spin stats
+        const spinStats = await pool.query(
+            `SELECT 
+                SUM(total_spins) as total_spins,
+                SUM(total_won) as total_prizes,
+                COUNT(*) as active_spinners
+             FROM user_spins WHERE total_spins > 0`
+        );
+
+        // Milestone stats
+        const milestoneStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_milestones_achieved,
+                SUM(bonus_awarded) as total_bonuses
+             FROM user_milestones`
+        );
+
+        // Activity stats
+        const activityStats = await pool.query(
+            `SELECT 
+                COUNT(DISTINCT activity_id) as total_activities,
+                COUNT(*) as total_participations,
+                SUM(points_earned) as total_points_awarded
+             FROM activity_participations`
+        );
+
+        res.json({
+            streaks: streakStats.rows[0],
+            referrals: referralStats.rows[0],
+            spins: spinStats.rows[0],
+            milestones: milestoneStats.rows[0],
+            activities: activityStats.rows[0]
+        });
+    } catch (error) {
+        console.error('Error fetching global stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+
+
 module.exports = router;
