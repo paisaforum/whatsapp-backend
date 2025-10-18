@@ -220,11 +220,6 @@ router.post('/register', async (req, res) => {
             [userId]
         );
 
-        await pool.query(
-            'INSERT INTO user_milestones (user_id) VALUES ($1)',
-            [userId]
-        );
-
         // Create JWT token
         const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
 
