@@ -140,45 +140,70 @@ function hashPhoneNumber(phoneNumber) {
     return crypto.createHash('sha256').update(phoneNumber).digest('hex');
 }
 
-// Register new user
 router.post('/register', async (req, res) => {
     const { whatsappNumber, password } = req.body;
-
+    
     if (!whatsappNumber || !password) {
         return res.status(400).json({ error: 'WhatsApp number and password are required' });
     }
-
+    
     if (password.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
-
+    
     try {
         const pool = req.app.get('db');
-
+        
         // Check if user already exists
         const existingUser = await pool.query(
             'SELECT id FROM users WHERE whatsapp_number = $1',
             [whatsappNumber]
         );
-
+        
         if (existingUser.rows.length > 0) {
             return res.status(400).json({ error: 'Account with this number already exists. Please login.' });
         }
-
+        
         // Hash password
         const passwordHash = await bcrypt.hash(password, 10);
-
+        
         // Create new user
         const newUser = await pool.query(
             'INSERT INTO users (whatsapp_number, password_hash) VALUES ($1, $2) RETURNING id',
             [whatsappNumber, passwordHash]
         );
-
+        
+        const userId = newUser.rows[0].id;
+        
+        // Generate unique referral code
+        const referralCode = `REF${userId.toString().padStart(6, '0')}`;
+        
+        // Initialize user data in all related tables
+        await pool.query(
+            'INSERT INTO referrals (user_id, referral_code) VALUES ($1, $2)',
+            [userId, referralCode]
+        );
+        
+        await pool.query(
+            'INSERT INTO user_spins (user_id) VALUES ($1)',
+            [userId]
+        );
+        
+        await pool.query(
+            'INSERT INTO user_streaks (user_id) VALUES ($1)',
+            [userId]
+        );
+        
+        await pool.query(
+            'INSERT INTO user_milestones (user_id) VALUES ($1)',
+            [userId]
+        );
+        
         // Create JWT token
-        const token = jwt.sign({ userId: newUser.rows[0].id }, JWT_SECRET, { expiresIn: '30d' });
-
+        const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
+        
         res.json({
-            userId: newUser.rows[0].id,
+            userId: userId,
             token: token,
             message: 'Account created successfully!'
         });
