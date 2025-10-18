@@ -187,7 +187,7 @@ router.post('/register', async (req, res) => {
 
             if (referrer.rows.length > 0) {
                 const referrerId = referrer.rows[0].id;
-                
+
                 // Get signup bonus from settings
                 const bonusSettings = await pool.query(
                     'SELECT setting_value FROM settings WHERE setting_key = $1',
@@ -3538,10 +3538,10 @@ router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
 
         if (spins.rows.length === 0) {
             // Create initial spin record
-spins = await pool.query(
-    'INSERT INTO user_spins (user_id, free_spins_today, last_spin_date) VALUES ($1, 1, $2) RETURNING *',
-    [userId, today]
-);
+            spins = await pool.query(
+                'INSERT INTO user_spins (user_id, free_spins_today, last_spin_date) VALUES ($1, 1, $2) RETURNING *',
+                [userId, today]
+            );
         } else {
             // Reset free spins if new day
             if (spins.rows[0].last_spin_date !== today) {
