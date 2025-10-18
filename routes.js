@@ -141,67 +141,93 @@ function hashPhoneNumber(phoneNumber) {
 }
 
 router.post('/register', async (req, res) => {
-    const { whatsappNumber, password } = req.body;
-    
+    const { whatsappNumber, password, referredByCode } = req.body;
+
     if (!whatsappNumber || !password) {
         return res.status(400).json({ error: 'WhatsApp number and password are required' });
     }
-    
+
     if (password.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
-    
+
     try {
         const pool = req.app.get('db');
-        
+
         // Check if user already exists
         const existingUser = await pool.query(
             'SELECT id FROM users WHERE whatsapp_number = $1',
             [whatsappNumber]
         );
-        
+
         if (existingUser.rows.length > 0) {
             return res.status(400).json({ error: 'Account with this number already exists. Please login.' });
         }
-        
+
         // Hash password
         const passwordHash = await bcrypt.hash(password, 10);
-        
-        // Create new user
-        const newUser = await pool.query(
-            'INSERT INTO users (whatsapp_number, password_hash) VALUES ($1, $2) RETURNING id',
-            [whatsappNumber, passwordHash]
-        );
-        
-        const userId = newUser.rows[0].id;
-        
+
         // Generate unique referral code
-        const referralCode = `REF${userId.toString().padStart(6, '0')}`;
-        
-        // Initialize user data in all related tables
-        await pool.query(
-            'INSERT INTO referrals (user_id, referral_code) VALUES ($1, $2)',
-            [userId, referralCode]
+        const referralCode = `REF${Math.floor(Math.random() * 1000000).toString().padStart(6, '0')}`;
+
+        // Create new user with referral code
+        const newUser = await pool.query(
+            'INSERT INTO users (whatsapp_number, password_hash, referral_code, referred_by_code) VALUES ($1, $2, $3, $4) RETURNING id',
+            [whatsappNumber, passwordHash, referralCode, referredByCode || null]
         );
-        
+
+        const userId = newUser.rows[0].id;
+
+        // If user was referred, create referral relationship
+        if (referredByCode) {
+            const referrer = await pool.query(
+                'SELECT id FROM users WHERE referral_code = $1',
+                [referredByCode]
+            );
+
+            if (referrer.rows.length > 0) {
+                const referrerId = referrer.rows[0].id;
+                
+                // Get signup bonus from settings
+                const bonusSettings = await pool.query(
+                    'SELECT setting_value FROM settings WHERE setting_key = $1',
+                    ['referral_signup_bonus']
+                );
+                const signupBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 100;
+
+                // Create referral relationship
+                await pool.query(
+                    'INSERT INTO referrals (referrer_id, referred_id, referral_code, signup_bonus_awarded) VALUES ($1, $2, $3, true)',
+                    [referrerId, userId, referredByCode]
+                );
+
+                // Award signup bonus to both users
+                await pool.query(
+                    'UPDATE users SET points = points + $1 WHERE id IN ($2, $3)',
+                    [signupBonus, referrerId, userId]
+                );
+            }
+        }
+
+        // Initialize user data in related tables
         await pool.query(
-            'INSERT INTO user_spins (user_id) VALUES ($1)',
+            'INSERT INTO user_spins (user_id, free_spins_today) VALUES ($1, 1)',
             [userId]
         );
-        
+
         await pool.query(
             'INSERT INTO user_streaks (user_id) VALUES ($1)',
             [userId]
         );
-        
+
         await pool.query(
             'INSERT INTO user_milestones (user_id) VALUES ($1)',
             [userId]
         );
-        
+
         // Create JWT token
         const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
-        
+
         res.json({
             userId: userId,
             token: token,
