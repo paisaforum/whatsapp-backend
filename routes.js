@@ -290,7 +290,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 
         // Get user info
         const user = await pool.query(
-           'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
+            'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
             [userId]
         );
 
@@ -3540,8 +3540,13 @@ router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
                 [userId, today]
             );
         } else {
-            // Reset free spins if new day
-            if (spins.rows[0].last_spin_date !== today) {
+            // Reset free spins if new day - FIX: Convert database date to string for comparison
+            const lastSpinDate = spins.rows[0].last_spin_date
+                ? new Date(spins.rows[0].last_spin_date).toISOString().split('T')[0]
+                : null;
+
+            if (lastSpinDate !== today) {
+                console.log('📅 New day detected, resetting spins'); // Debug log
                 await pool.query(
                     'UPDATE user_spins SET free_spins_today = 1, last_spin_date = $1 WHERE user_id = $2',
                     [today, userId]
@@ -3583,13 +3588,13 @@ router.post('/spin', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, spinType } = req.body; // spinType: 'free' or 'bonus' or 'paid'
-         console.log('🎰 SPIN REQUEST:', { userId, spinType }); 
+        console.log('🎰 SPIN REQUEST:', { userId, spinType });
         const today = new Date().toISOString().split('T')[0];
-        
+
 
         // Get user spins
         const userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
-         console.log('🎰 Current spins:', userSpins.rows[0]); // ADD THIS
+        console.log('🎰 Current spins:', userSpins.rows[0]); // ADD THIS
         if (userSpins.rows.length === 0) {
             return res.status(400).json({ error: 'Spin data not found' });
         }
@@ -3617,7 +3622,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
             }
 
             await pool.query('UPDATE users SET points = points - $1 WHERE id = $2', [cost, userId]);
-            
+
         }
 
         // Get prize pool
@@ -3657,7 +3662,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
             'UPDATE user_spins SET total_spins = total_spins + 1, total_won = total_won + $1 WHERE user_id = $2',
             [prize, userId]
         );
-            console.log('✅ Spin complete'); // ADD THIS
+        console.log('✅ Spin complete'); // ADD THIS
 
         // Record spin history
         await pool.query(
