@@ -289,7 +289,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 
         // Get user info
         const user = await pool.query(
-            'SELECT id, whatsapp_number, created_at FROM users WHERE id = $1',
+            'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
             [userId]
         );
 
