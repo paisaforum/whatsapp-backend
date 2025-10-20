@@ -220,6 +220,7 @@ router.post('/register', async (req, res) => {
             [userId]
         );
 
+
         // Create JWT token
         const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
 
@@ -289,7 +290,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 
         // Get user info
         const user = await pool.query(
-            'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
+           'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
             [userId]
         );
 
@@ -408,6 +409,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
+            spins: spinsData.rows[0],
             submissions: submissions.rows,
             submissionsPagination: {
                 total: totalSubmissions,
