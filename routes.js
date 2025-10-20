@@ -3583,10 +3583,13 @@ router.post('/spin', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, spinType } = req.body; // spinType: 'free' or 'bonus' or 'paid'
+         console.log('🎰 SPIN REQUEST:', { userId, spinType }); 
         const today = new Date().toISOString().split('T')[0];
+        
 
         // Get user spins
         const userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+         console.log('🎰 Current spins:', userSpins.rows[0]); // ADD THIS
         if (userSpins.rows.length === 0) {
             return res.status(400).json({ error: 'Spin data not found' });
         }
@@ -3595,6 +3598,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Check if user has spins available
         if (spinType === 'free' && spinData.free_spins_today <= 0) {
+            console.log('❌ No free spins available'); // ADD THIS
             return res.status(400).json({ error: 'No free spins available today' });
         }
 
@@ -3613,6 +3617,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
             }
 
             await pool.query('UPDATE users SET points = points - $1 WHERE id = $2', [cost, userId]);
+            
         }
 
         // Get prize pool
@@ -3637,9 +3642,11 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Award prize
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
+        console.log('✅ Points added:', prize); // ADD THIS
 
         // Update spin counts
         if (spinType === 'free') {
+            console.log('🔄 Decrementing free spins...'); // ADD THIS
             await pool.query('UPDATE user_spins SET free_spins_today = free_spins_today - 1 WHERE user_id = $1', [userId]);
         } else if (spinType === 'bonus') {
             await pool.query('UPDATE user_spins SET bonus_spins = bonus_spins - 1 WHERE user_id = $1', [userId]);
@@ -3650,6 +3657,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
             'UPDATE user_spins SET total_spins = total_spins + 1, total_won = total_won + $1 WHERE user_id = $2',
             [prize, userId]
         );
+            console.log('✅ Spin complete'); // ADD THIS
 
         // Record spin history
         await pool.query(
