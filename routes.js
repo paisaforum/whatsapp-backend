@@ -409,7 +409,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
-            spins: spinsData.rows[0],
+            spins: spinData.rows[0],
             submissions: submissions.rows,
             submissionsPagination: {
                 total: totalSubmissions,
