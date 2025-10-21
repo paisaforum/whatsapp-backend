@@ -482,6 +482,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             [userId, screenshotPaths, numbers.length, numbers.length]
         );
 
+        const submissionId = submission.rows[0].id;
 
         // ← ADD THIS RIGHT HERE:
         // Update user's total points
@@ -496,6 +497,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // 1. UPDATE STREAK
         // 1. UPDATE STREAK
         try {
+            let streakBonus = 0; // ← ADD THIS
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
 
@@ -515,7 +517,14 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                 const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
 
                 if (day1Bonus > 0) {
+                    streakBonus = day1Bonus; // ← ADD THIS
                     await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
+
+                    // ← ADD THIS: Update submission with streak bonus
+                    await pool.query(
+                        'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
+                        [day1Bonus, submissionId]
+                    );
 
                     await pool.query(
                         'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
@@ -542,7 +551,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                     // If not consecutive, streak resets to 1
 
                     // Get streak bonus for this specific day
-                    let streakBonus = 0;
+                    streakBonus = 0;
                     let settingKey = '';
 
                     // Check for specific day bonus (Day 1-7 and Day 30)
@@ -576,8 +585,15 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                     );
 
                     // Award bonus points if any
+                    // Award bonus points if any
                     if (streakBonus > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+
+                        // ← ADD THIS: Update submission with streak bonus
+                        await pool.query(
+                            'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
+                            [streakBonus, submissionId]
+                        );
 
                         // Notify user about milestone
                         await pool.query(
@@ -656,7 +672,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                     );
 
                     const commissionPercent = parseInt(commissionSettings.rows[0].setting_value) || 10;
-                    const commission = Math.floor(recipients.length * commissionPercent / 100);
+                    const commission = Math.floor(numbers.length * commissionPercent / 100);
 
                     if (commission > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
@@ -713,10 +729,6 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
 
 
-
-
-        const submissionId = submission.rows[0].id;
-
         // Store recipient mappings
         // Store recipient mappings with both hash and actual number
         for (let i = 0; i < hashedNumbers.length; i++) {
@@ -731,6 +743,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             success: true,
             submissionId: submissionId,
             pointsAwarded: numbers.length,
+            streakBonus: streakBonus || 0, // ← ADD THIS
+            totalEarned: numbers.length + (streakBonus || 0), // ← ADD THIS
             message: 'Submission successful!'
         });
 
