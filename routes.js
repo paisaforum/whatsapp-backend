@@ -1904,21 +1904,19 @@ router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), asy
         const total = parseInt(countResult.rows[0].total);
 
         // Get paginated results
-        const paramOffset = queryParams.length + 1;
-        queryParams.push(limit, offset);
-
+        // TO:
         const users = await pool.query(
-            `SELECT u.id, u.whatsapp_number, u.created_at,
-              COALESCE(SUM(s.points_awarded), 0) as total_points
-       FROM users u
-       LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-       ${whereClause}
-       GROUP BY u.id, u.whatsapp_number, u.created_at
-       ORDER BY u.created_at DESC
-       LIMIT $${paramOffset} OFFSET $${paramOffset + 1}`,
+            `SELECT u.id, u.whatsapp_number, u.points, u.created_at,
+      COUNT(s.id) as total_submissions
+   FROM users u
+   LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+   ${whereClause}
+   GROUP BY u.id, u.whatsapp_number, u.points, u.created_at
+   ORDER BY u.created_at DESC
+   LIMIT $${paramOffset} OFFSET $${paramOffset + 1}`,
             queryParams
         );
-
+        
         res.json({
             users: users.rows,
             pagination: {
