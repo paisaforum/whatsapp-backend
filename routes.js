@@ -2375,8 +2375,11 @@ router.get('/admin/settings', authenticateAdmin, checkPermission('view_analytics
     try {
         const pool = req.app.get('db');
 
-         const settings = await pool.query(
-            'SELECT * FROM settings ORDER BY setting_key'  // ✅ CORRECT TABLE
+        // ✅ Only return core redemption settings (not streaks, spins, referrals, etc.)
+        const settings = await pool.query(
+            `SELECT * FROM settings 
+             WHERE setting_key IN ('min_redemption_points', 'points_per_rupee', 'redemption_amount')
+             ORDER BY setting_key`
         );
 
         res.json({ settings: settings.rows });
