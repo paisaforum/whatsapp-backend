@@ -483,6 +483,12 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         );
 
 
+        // ← ADD THIS RIGHT HERE:
+        // Update user's total points
+        await pool.query(
+            'UPDATE users SET points = points + $1 WHERE id = $2',
+            [numbers.length, userId]
+        );
 
         // ==================== EXISTING SUBMIT-PROOF ROUTE - ADD THIS CODE ====================
 
