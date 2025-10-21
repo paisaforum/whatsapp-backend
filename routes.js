@@ -486,22 +486,41 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
         // ==================== EXISTING SUBMIT-PROOF ROUTE - ADD THIS CODE ====================
 
-        // Find this section in your existing submit-proof route:
-        // After: const submission = await pool.query('INSERT INTO submissions...')
-        // Add these automatic bonus triggers:
 
+        // 1. UPDATE STREAK
         // 1. UPDATE STREAK
         try {
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
 
             if (streak.rows.length === 0) {
+                // First time submitter
                 await pool.query(
                     'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
                     [userId, today]
                 );
+
+                // Check if Day 1 has a bonus
+                const day1Settings = await pool.query(
+                    'SELECT setting_value FROM settings WHERE setting_key = $1',
+                    ['streak_day1_bonus']
+                );
+
+                const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
+
+                if (day1Bonus > 0) {
+                    await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
+
+                    await pool.query(
+                        'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                        [userId, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
+                    );
+                }
+
             } else {
-                const lastShareDate = streak.rows[0].last_share_date;
+                const lastShareDate = streak.rows[0].last_share_date
+                    ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
+                    : null;
                 const currentStreak = streak.rows[0].current_streak;
 
                 if (lastShareDate !== today) {
@@ -511,24 +530,34 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
                     let newStreak = 1;
                     if (lastShareDate === yesterdayStr) {
+                        // Consecutive day - increment streak
                         newStreak = currentStreak + 1;
                     }
+                    // If not consecutive, streak resets to 1
 
-                    // Get streak bonus settings
-                    const streakSettings = await pool.query(
-                        'SELECT * FROM settings WHERE setting_key IN ($1, $2, $3)',
-                        ['streak_daily_bonus', 'streak_7day_bonus', 'streak_30day_bonus']
-                    );
+                    // Get streak bonus for this specific day
+                    let streakBonus = 0;
+                    let settingKey = '';
 
-                    const settingsObj = {};
-                    streakSettings.rows.forEach(s => {
-                        settingsObj[s.setting_key] = parseInt(s.setting_value);
-                    });
+                    // Check for specific day bonus (Day 1-7 and Day 30)
+                    if (newStreak <= 7) {
+                        settingKey = `streak_day${newStreak}_bonus`;
+                    } else if (newStreak === 30) {
+                        settingKey = 'streak_30day_bonus';
+                    } else if (newStreak % 30 === 0) {
+                        // Every 30 days after first 30
+                        settingKey = 'streak_30day_bonus';
+                    }
 
-                    let bonus = settingsObj.streak_daily_bonus || 10;
-                    if (newStreak === 7) bonus = settingsObj.streak_7day_bonus || 50;
-                    if (newStreak === 30) bonus = settingsObj.streak_30day_bonus || 500;
+                    if (settingKey) {
+                        const bonusSettings = await pool.query(
+                            'SELECT setting_value FROM settings WHERE setting_key = $1',
+                            [settingKey]
+                        );
+                        streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
+                    }
 
+                    // Update streak data
                     await pool.query(
                         `UPDATE user_streaks 
                  SET current_streak = $1, 
@@ -537,13 +566,21 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                      total_streak_bonuses = total_streak_bonuses + $3,
                      updated_at = NOW()
                  WHERE user_id = $4`,
-                        [newStreak, today, bonus, userId]
+                        [newStreak, today, streakBonus, userId]
                     );
 
-                    if (bonus > 0) {
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                    // Award bonus points if any
+                    if (streakBonus > 0) {
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+
+                        // Notify user about milestone
+                        await pool.query(
+                            'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                            [userId, `🔥 ${newStreak} day streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                        );
                     }
                 }
+                // If already shared today, do nothing extra
             }
         } catch (error) {
             console.error('Streak update error:', error);
@@ -552,9 +589,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // 2. CHECK MILESTONES
         try {
             const totalShares = await pool.query(
-                `SELECT COUNT(DISTINCT recipient_number) as total
-         FROM submission_recipients sr
-         JOIN submissions s ON sr.submission_id = s.id
+                `SELECT COUNT(DISTINCT recipient_number_hash) as total
+ FROM user_recipients ur
+ JOIN submissions s ON ur.submission_id = s.id
          WHERE s.user_id = $1 AND s.status = 'active'`,
                 [userId]
             );
@@ -639,9 +676,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
 
             const totalShares = await pool.query(
-                `SELECT COUNT(DISTINCT recipient_number) as total
-         FROM submission_recipients sr
-         JOIN submissions s ON sr.submission_id = s.id
+                `SELECT COUNT(DISTINCT recipient_number_hash) as total
+ FROM user_recipients ur
+ JOIN submissions s ON ur.submission_id = s.id
          WHERE s.user_id = $1 AND s.status = 'active'`,
                 [userId]
             );
@@ -1880,6 +1917,7 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
 });
 
 // Get all users (admin) - with pagination and search
+// Get all users (admin) - with pagination and search
 router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -1903,20 +1941,22 @@ router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), asy
 
         const total = parseInt(countResult.rows[0].total);
 
-        // Get paginated results
-        // TO:
+        // Get paginated results - Add limit and offset to params
+        const paramIndex = queryParams.length;
+        queryParams.push(limit, offset);
+
         const users = await pool.query(
             `SELECT u.id, u.whatsapp_number, u.points, u.created_at,
-      COUNT(s.id) as total_submissions
-   FROM users u
-   LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-   ${whereClause}
-   GROUP BY u.id, u.whatsapp_number, u.points, u.created_at
-   ORDER BY u.created_at DESC
-   LIMIT $${paramOffset} OFFSET $${paramOffset + 1}`,
+              COUNT(s.id) as total_submissions
+           FROM users u
+           LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+           ${whereClause}
+           GROUP BY u.id, u.whatsapp_number, u.points, u.created_at
+           ORDER BY u.created_at DESC
+           LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`,
             queryParams
         );
-        
+
         res.json({
             users: users.rows,
             pagination: {
@@ -1931,7 +1971,6 @@ router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), asy
         res.status(500).json({ error: 'Failed to fetch users' });
     }
 });
-
 
 
 // Add points to user (admin - for testing)
@@ -3708,7 +3747,7 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         // Get total shares (recipients) count
         const totalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
-             FROM submission_recipients sr
+             FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
              WHERE s.user_id = $1 AND s.status = 'active'`,
             [userId]
@@ -3783,7 +3822,7 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
         // Get current share count
         const totalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
-             FROM submission_recipients sr
+             FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
              WHERE s.user_id = $1 AND s.status = 'active'`,
             [userId]
