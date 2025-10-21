@@ -497,10 +497,10 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // 1. UPDATE STREAK
         // 1. UPDATE STREAK
         try {
-            let streakBonus = 0; // ← ADD THIS
+            
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
-
+            let streakBonus = 0; // ← ADD THIS
             if (streak.rows.length === 0) {
                 // First time submitter
                 await pool.query(
