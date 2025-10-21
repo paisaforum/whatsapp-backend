@@ -825,7 +825,7 @@ router.post('/request-redemption', authenticateUser, async (req, res) => {
 router.get('/settings', async (req, res) => {
     try {
         const pool = req.app.get('db');
-         const settings = await pool.query(
+        const settings = await pool.query(
             'SELECT setting_key, setting_value FROM settings ORDER BY setting_key'  // ✅ CORRECT TABLE
         );
         res.json({ settings: settings.rows });
@@ -1852,6 +1852,7 @@ router.get('/admin/user-submissions/:userId', authenticateAdmin, checkPermission
 });
 
 // Review redemption (admin)
+// Review redemption (admin)
 router.post('/admin/review-redemption', authenticateAdmin, checkPermission('manage_redemptions'), async (req, res) => {
     const { redemptionId, action, giftCode, rejectionReason, adminId } = req.body;
 
@@ -1862,8 +1863,8 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
             // Update redemption
             await pool.query(
                 `UPDATE redemptions 
-         SET status = 'approved', gift_code = $1, reviewed_by = $2, reviewed_at = NOW() 
-         WHERE id = $3`,
+                 SET status = 'approved', gift_code = $1, reviewed_by = $2, reviewed_at = NOW() 
+                 WHERE id = $3`,
                 [giftCode, adminId, redemptionId]
             );
 
@@ -1874,11 +1875,70 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
             );
 
             const userId = redemption.rows[0].user_id;
+            const pointsRedeemed = redemption.rows[0].points_requested;
 
-            // Create notification
+            // ============ REFERRAL COMMISSION ON APPROVAL ============
+            try {
+                // Check if this user was referred by someone
+                const user = await pool.query(
+                    'SELECT referred_by_code FROM users WHERE id = $1',
+                    [userId]
+                );
+
+                if (user.rows[0]?.referred_by_code) {
+                    // Find the referrer
+                    const referrer = await pool.query(
+                        'SELECT id, whatsapp_number FROM users WHERE referral_code = $1',
+                        [user.rows[0].referred_by_code]
+                    );
+
+                    if (referrer.rows.length > 0) {
+                        const referrerId = referrer.rows[0].id;
+
+                        // Get commission percentage from settings
+                        const commissionSettings = await pool.query(
+                            'SELECT setting_value FROM settings WHERE setting_key = $1',
+                            ['referral_commission_percent']
+                        );
+
+                        const commissionPercent = parseInt(commissionSettings.rows[0]?.setting_value) || 10;
+
+                        // Calculate commission based on redeemed points
+                        const commission = Math.floor(pointsRedeemed * commissionPercent / 100);
+
+                        if (commission > 0) {
+                            // Award commission points to referrer
+                            await pool.query(
+                                'UPDATE users SET points = points + $1 WHERE id = $2',
+                                [commission, referrerId]
+                            );
+
+                            // Update referral commission tracking
+                            await pool.query(
+                                'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
+                                [commission, referrerId, userId]
+                            );
+
+                            // Notify referrer about commission
+                            await pool.query(
+                                'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                                [referrerId, `🎉 You earned ${commission} points commission from your referral's redemption!`, 'referral_commission']
+                            );
+
+                            console.log(`✅ Commission awarded: ${commission} points to referrer ${referrerId}`);
+                        }
+                    }
+                }
+            } catch (commissionError) {
+                console.error('Failed to award referral commission:', commissionError);
+                // Don't throw - commission failure shouldn't block redemption approval
+            }
+            // ============ END REFERRAL COMMISSION ============
+
+            // Create notification for user
             await pool.query(
                 `INSERT INTO notifications (user_id, type, message, data) 
-         VALUES ($1, 'redemption_approved', 'Your redemption has been approved!', $2)`,
+                 VALUES ($1, 'redemption_approved', 'Your redemption has been approved!', $2)`,
                 [userId, JSON.stringify({ giftCode: giftCode, redemptionId: redemptionId })]
             );
 
@@ -1888,8 +1948,8 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
             // Update redemption
             await pool.query(
                 `UPDATE redemptions 
-         SET status = 'rejected', rejection_reason = $1, reviewed_by = $2, reviewed_at = NOW() 
-         WHERE id = $3`,
+                 SET status = 'rejected', rejection_reason = $1, reviewed_by = $2, reviewed_at = NOW() 
+                 WHERE id = $3`,
                 [rejectionReason, adminId, redemptionId]
             );
 
@@ -1901,10 +1961,12 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
 
             const userId = redemption.rows[0].user_id;
 
+            // NO COMMISSION ON REJECTION - referrer doesn't earn anything
+
             // Create notification
             await pool.query(
                 `INSERT INTO notifications (user_id, type, message, data) 
-         VALUES ($1, 'redemption_rejected', 'Your redemption request was rejected.', $2)`,
+                 VALUES ($1, 'redemption_rejected', 'Your redemption request was rejected.', $2)`,
                 [userId, JSON.stringify({ reason: rejectionReason, redemptionId: redemptionId })]
             );
 
@@ -1916,6 +1978,7 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
         res.status(500).json({ error: 'Failed to review redemption' });
     }
 });
+
 
 // Get all users (admin) - with pagination and search
 // Get all users (admin) - with pagination and search
