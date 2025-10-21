@@ -2386,7 +2386,6 @@ router.get('/admin/settings', authenticateAdmin, checkPermission('view_analytics
     }
 });
 
-// Update system setting (admin)
 router.put('/admin/settings/:settingKey', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     const { settingKey } = req.params;
     const { value } = req.body;
@@ -2398,13 +2397,13 @@ router.put('/admin/settings/:settingKey', authenticateAdmin, checkPermission('vi
     try {
         const pool = req.app.get('db');
 
+        // ✅ FIXED: Correct table name
         await pool.query(
-            'UPDATE system_settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
+            'UPDATE settings SET setting_value = $1 WHERE setting_key = $2',
             [value, settingKey]
         );
 
         await logAdminActivity(pool, req.admin.adminId, 'update_setting', `Updated ${settingKey} to ${value}`);
-
 
         res.json({ success: true, message: 'Setting updated successfully' });
     } catch (error) {
@@ -2412,7 +2411,6 @@ router.put('/admin/settings/:settingKey', authenticateAdmin, checkPermission('vi
         res.status(500).json({ error: 'Failed to update setting' });
     }
 });
-
 
 
 
