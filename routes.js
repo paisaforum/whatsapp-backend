@@ -281,6 +281,7 @@ router.post('/login', async (req, res) => {
 });
 
 // Get user dashboard data (with pagination)
+// Get user dashboard data (with pagination)
 router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
     const { userId } = req.params;
     const { submissionsPage = 1, redemptionsPage = 1, limit = 5 } = req.query;
@@ -288,9 +289,9 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // Get user info
+        // Get user info - FIXED: Added created_at
         const user = await pool.query(
-            'SELECT id, whatsapp_number, points, referral_code FROM users WHERE id = $1',
+            'SELECT id, whatsapp_number, points, referral_code, created_at FROM users WHERE id = $1',
             [userId]
         );
 
@@ -309,8 +310,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         // Get redeemed points
         const redeemedResult = await pool.query(
             `SELECT COALESCE(SUM(points_requested), 0) as redeemed_points
-       FROM redemptions 
-       WHERE user_id = $1 AND status = 'approved'`,
+             FROM redemptions 
+             WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
@@ -328,9 +329,9 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         const submissionsOffset = (submissionsPage - 1) * limit;
         const submissions = await pool.query(
             `SELECT * FROM submissions 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC 
-       LIMIT $2 OFFSET $3`,
+             WHERE user_id = $1 
+             ORDER BY created_at DESC 
+             LIMIT $2 OFFSET $3`,
             [userId, limit, submissionsOffset]
         );
 
@@ -345,33 +346,28 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         const redemptionsOffset = (redemptionsPage - 1) * limit;
         const redemptions = await pool.query(
             `SELECT * FROM redemptions 
-       WHERE user_id = $1 
-       ORDER BY requested_at DESC
-       LIMIT $2 OFFSET $3`,
+             WHERE user_id = $1 
+             ORDER BY requested_at DESC
+             LIMIT $2 OFFSET $3`,
             [userId, limit, redemptionsOffset]
         );
 
         // Get unread notifications
         const notifications = await pool.query(
             `SELECT * FROM notifications 
-       WHERE user_id = $1 AND is_read = false 
-       ORDER BY created_at DESC`,
+             WHERE user_id = $1 AND is_read = false 
+             ORDER BY created_at DESC`,
             [userId]
         );
 
         // Get pending redemptions
         const pendingRedemption = await pool.query(
             `SELECT * FROM redemptions 
-       WHERE user_id = $1 AND status = 'pending'
-       ORDER BY requested_at DESC
-       LIMIT 1`,
+             WHERE user_id = $1 AND status = 'pending'
+             ORDER BY requested_at DESC
+             LIMIT 1`,
             [userId]
         );
-
-
-        // ==================== UPDATE EXISTING DASHBOARD ROUTE ====================
-
-        // Add these queries BEFORE the final res.json() in dashboard route:
 
         // Get streak data
         const streakData = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
@@ -379,9 +375,9 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         // Get referral data
         const referralData = await pool.query(
             `SELECT 
-        COUNT(*) as total_referrals,
-        SUM(total_commission_earned) as total_commission
-     FROM referrals WHERE referrer_id = $1`,
+                COUNT(*) as total_referrals,
+                COALESCE(SUM(total_commission_earned), 0) as total_commission
+             FROM referrals WHERE referrer_id = $1`,
             [userId]
         );
 
@@ -402,7 +398,6 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
-            spins: spinData.rows[0],
             submissions: submissions.rows,
             submissionsPagination: {
                 total: totalSubmissions,
@@ -419,8 +414,6 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             },
             notifications: notifications.rows,
             pendingRedemption: pendingRedemption.rows[0] || null,
-
-            // ADD THESE NEW FIELDS:
             streak: streakData.rows[0] || { current_streak: 0, longest_streak: 0 },
             referrals: referralData.rows[0] || { total_referrals: 0, total_commission: 0 },
             spins: spinData.rows[0] || { free_spins_today: 1, bonus_spins: 0, total_won: 0 },
@@ -431,7 +424,6 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to load dashboard' });
     }
 });
-
 // Submit proof endpoint
 router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
