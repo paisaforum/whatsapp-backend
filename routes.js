@@ -451,6 +451,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
     try {
         const pool = req.app.get('db');
         const numbers = JSON.parse(recipientNumbers);
+        let streakBonus = 0; // ← ADD THIS LINE
 
         // Validate counts match
         if (numbers.length !== screenshots.length) {
@@ -497,10 +498,10 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // 1. UPDATE STREAK
         // 1. UPDATE STREAK
         try {
-            
+
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
-            let streakBonus = 0; // ← ADD THIS
+
             if (streak.rows.length === 0) {
                 // First time submitter
                 await pool.query(
@@ -1961,19 +1962,19 @@ router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), asy
 
         const total = parseInt(countResult.rows[0].total);
 
-        // Get paginated results - Add limit and offset to params
+        // Get paginated results
         const paramIndex = queryParams.length;
         queryParams.push(limit, offset);
 
         const users = await pool.query(
             `SELECT u.id, u.whatsapp_number, u.points, u.created_at,
-              COUNT(s.id) as total_submissions
-           FROM users u
-           LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-           ${whereClause}
-           GROUP BY u.id, u.whatsapp_number, u.points, u.created_at
-           ORDER BY u.created_at DESC
-           LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`,
+      COUNT(s.id) as total_submissions
+   FROM users u
+   LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+   ${whereClause}
+   GROUP BY u.id, u.whatsapp_number, u.points, u.created_at
+   ORDER BY u.created_at DESC
+   LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`,
             queryParams
         );
 
