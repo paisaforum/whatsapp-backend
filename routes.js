@@ -825,8 +825,8 @@ router.post('/request-redemption', authenticateUser, async (req, res) => {
 router.get('/settings', async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const settings = await pool.query(
-            'SELECT setting_key, setting_value FROM system_settings ORDER BY setting_key'
+         const settings = await pool.query(
+            'SELECT setting_key, setting_value FROM settings ORDER BY setting_key'  // ✅ CORRECT TABLE
         );
         res.json({ settings: settings.rows });
     } catch (error) {
@@ -2375,8 +2375,8 @@ router.get('/admin/settings', authenticateAdmin, checkPermission('view_analytics
     try {
         const pool = req.app.get('db');
 
-        const settings = await pool.query(
-            'SELECT * FROM system_settings ORDER BY setting_key'
+         const settings = await pool.query(
+            'SELECT * FROM settings ORDER BY setting_key'  // ✅ CORRECT TABLE
         );
 
         res.json({ settings: settings.rows });
