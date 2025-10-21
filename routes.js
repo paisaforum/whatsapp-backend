@@ -762,30 +762,23 @@ router.post('/request-redemption', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
 
         // Get system settings
-        const settingsResult = await pool.query('SELECT setting_key, setting_value FROM system_settings');
+        const settingsResult = await pool.query('SELECT setting_key, setting_value FROM settings');
         const settings = {};
         settingsResult.rows.forEach(row => {
             settings[row.setting_key] = parseInt(row.setting_value);
         });
 
-        // Calculate available points
-        const pointsResult = await pool.query(
-            `SELECT COALESCE(SUM(points_awarded), 0) as total_points
-       FROM submissions 
-       WHERE user_id = $1 AND status = 'active'`,
+        // ✅ NEW: Get points directly from users table
+        const userResult = await pool.query(
+            'SELECT points FROM users WHERE id = $1',
             [userId]
         );
 
-        const redeemedResult = await pool.query(
-            `SELECT COALESCE(SUM(points_requested), 0) as redeemed_points
-       FROM redemptions 
-       WHERE user_id = $1 AND status = 'approved'`,
-            [userId]
-        );
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
 
-        const totalPoints = parseInt(pointsResult.rows[0].total_points);
-        const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
-        const availablePoints = totalPoints - redeemedPoints;
+        const availablePoints = userResult.rows[0].points;
 
         // Check if user has enough points
         if (availablePoints < settings.min_redemption_points) {
@@ -796,40 +789,34 @@ router.post('/request-redemption', authenticateUser, async (req, res) => {
 
         // Check if user already has a pending redemption
         const pendingCheck = await pool.query(
-            `SELECT id FROM redemptions 
-       WHERE user_id = $1 AND status = 'pending'`,
-            [userId]
+            'SELECT id FROM redemptions WHERE user_id = $1 AND status = $2',
+            [userId, 'pending']
         );
 
         if (pendingCheck.rows.length > 0) {
-            return res.status(400).json({
-                error: 'You already have a pending redemption request. Please wait for review.'
-            });
+            return res.status(400).json({ error: 'You already have a pending redemption request' });
         }
 
-        // Create redemption request with dynamic amount
-        const redemption = await pool.query(
-            `INSERT INTO redemptions (user_id, points_requested, status) 
-       VALUES ($1, $2, 'pending') RETURNING id`,
-            [userId, settings.redemption_amount]
+        // Create redemption request
+        await pool.query(
+            'INSERT INTO redemptions (user_id, points_requested, status, requested_at) VALUES ($1, $2, $3, NOW())',
+            [userId, settings.min_redemption_points, 'pending']
         );
 
-        // Create notification for user
+        // Deduct points from user's balance
         await pool.query(
-            `INSERT INTO notifications (user_id, type, message, data) 
-       VALUES ($1, 'redemption_requested', 'Your redemption request has been submitted and is under review.', $2)`,
-            [userId, JSON.stringify({ redemptionId: redemption.rows[0].id })]
+            'UPDATE users SET points = points - $1 WHERE id = $2',
+            [settings.min_redemption_points, userId]
         );
 
         res.json({
             success: true,
-            redemptionId: redemption.rows[0].id,
-            message: 'Redemption request submitted successfully!'
+            message: 'Redemption request submitted successfully'
         });
 
     } catch (error) {
-        console.error('Redemption request error:', error);
-        res.status(500).json({ error: 'Failed to submit redemption request' });
+        console.error('Redemption error:', error);
+        res.status(500).json({ error: 'Failed to process redemption request' });
     }
 });
 
