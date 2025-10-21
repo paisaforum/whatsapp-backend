@@ -3705,10 +3705,10 @@ router.post('/spin', authenticateUser, async (req, res) => {
         console.log('🎰 SPIN REQUEST:', { userId, spinType });
         const today = new Date().toISOString().split('T')[0];
 
-
         // Get user spins
         const userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
-        console.log('🎰 Current spins:', userSpins.rows[0]); // ADD THIS
+        console.log('🎰 Current spins:', userSpins.rows[0]);
+        
         if (userSpins.rows.length === 0) {
             return res.status(400).json({ error: 'Spin data not found' });
         }
@@ -3717,7 +3717,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Check if user has spins available
         if (spinType === 'free' && spinData.free_spins_today <= 0) {
-            console.log('❌ No free spins available'); // ADD THIS
+            console.log('❌ No free spins available');
             return res.status(400).json({ error: 'No free spins available today' });
         }
 
@@ -3736,16 +3736,30 @@ router.post('/spin', authenticateUser, async (req, res) => {
             }
 
             await pool.query('UPDATE users SET points = points - $1 WHERE id = $2', [cost, userId]);
-
         }
 
         // Get prize pool
         const settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_prizes']);
         const prizes = JSON.parse(settings.rows[0].setting_value);
 
-        // Randomly select prize (weighted towards lower values)
-        const weights = [30, 25, 20, 15, 7, 2, 1]; // Higher chance for smaller prizes
-        let totalWeight = weights.reduce((a, b) => a + b, 0);
+        // ============ DYNAMIC WEIGHTED RANDOM SELECTION ============
+        // Generate weights that heavily favor lower prizes
+        // Using exponential decay: first prize gets highest weight, last gets lowest
+        const weights = prizes.map((prize, index) => {
+            // Exponential weighting: 2^(n-i-1) where n is total prizes and i is index
+            // First prize (index 0) gets highest weight, last prize gets weight of 1
+            return Math.pow(2, prizes.length - index - 1);
+        });
+
+        console.log('🎲 Prizes:', prizes);
+        console.log('⚖️ Weights:', weights);
+
+        // Calculate probabilities for logging
+        const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+        const probabilities = weights.map(w => ((w / totalWeight) * 100).toFixed(2) + '%');
+        console.log('📊 Probabilities:', probabilities);
+
+        // Select prize based on weighted random
         let random = Math.random() * totalWeight;
         let prizeIndex = 0;
 
@@ -3758,14 +3772,16 @@ router.post('/spin', authenticateUser, async (req, res) => {
         }
 
         const prize = prizes[prizeIndex];
+        console.log('🎯 Selected prize:', prize, 'at index', prizeIndex);
+        // ============ END WEIGHTED SELECTION ============
 
         // Award prize
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
-        console.log('✅ Points added:', prize); // ADD THIS
+        console.log('✅ Points added:', prize);
 
         // Update spin counts
         if (spinType === 'free') {
-            console.log('🔄 Decrementing free spins...'); // ADD THIS
+            console.log('🔄 Decrementing free spins...');
             await pool.query('UPDATE user_spins SET free_spins_today = free_spins_today - 1 WHERE user_id = $1', [userId]);
         } else if (spinType === 'bonus') {
             await pool.query('UPDATE user_spins SET bonus_spins = bonus_spins - 1 WHERE user_id = $1', [userId]);
@@ -3776,7 +3792,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
             'UPDATE user_spins SET total_spins = total_spins + 1, total_won = total_won + $1 WHERE user_id = $2',
             [prize, userId]
         );
-        console.log('✅ Spin complete'); // ADD THIS
+        console.log('✅ Spin complete');
 
         // Record spin history
         await pool.query(
@@ -3794,7 +3810,6 @@ router.post('/spin', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to spin' });
     }
 });
-
 // Award bonus spin (called after X shares)
 router.post('/award-bonus-spin', authenticateUser, async (req, res) => {
     try {
