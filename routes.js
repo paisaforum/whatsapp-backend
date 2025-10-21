@@ -303,14 +303,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             'SELECT * FROM offers WHERE is_active = true ORDER BY created_at DESC LIMIT 1'
         );
 
-        // Calculate user points
-        const pointsResult = await pool.query(
-            `SELECT 
-        COALESCE(SUM(points_awarded), 0) as total_points
-       FROM submissions 
-       WHERE user_id = $1 AND status = 'active'`,
-            [userId]
-        );
+        // Get user's current points from users table (source of truth)
+        const userPoints = user.rows[0].points;
 
         // Get redeemed points
         const redeemedResult = await pool.query(
@@ -320,9 +314,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        const totalPoints = parseInt(pointsResult.rows[0].total_points);
         const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
-        const availablePoints = totalPoints - redeemedPoints;
+        const availablePoints = userPoints - redeemedPoints;
 
         // Get total submission count
         const submissionCountResult = await pool.query(
@@ -405,7 +398,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             user: user.rows[0],
             offer: offer.rows[0] || null,
             points: {
-                total: totalPoints,
+                total: userPoints,
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
@@ -1994,9 +1987,9 @@ router.get('/admin/users', authenticateAdmin, checkPermission('view_users'), asy
 });
 
 
-// Add points to user (admin - for testing)
+// Add points to user (admin)
 router.post('/admin/add-points', authenticateAdmin, checkPermission('manage_users'), async (req, res) => {
-    const { userId, points } = req.body;
+    const { userId, points, reason } = req.body;
 
     if (!userId || !points || points <= 0) {
         return res.status(400).json({ error: 'Valid user ID and points required' });
@@ -2005,14 +1998,19 @@ router.post('/admin/add-points', authenticateAdmin, checkPermission('manage_user
     try {
         const pool = req.app.get('db');
 
-        // Create a test submission with the points
+        // Directly update user's points
         await pool.query(
-            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
-       VALUES ($1, ARRAY['/uploads/admin-test.jpg'], $2, $2, 'active')`,
-            [userId, points]
+            'UPDATE users SET points = points + $1 WHERE id = $2',
+            [points, userId]
         );
 
-        await logAdminActivity(pool, req.admin.adminId, 'add_points', `Added ${points} points to user ID ${userId}`);
+        // Create a notification for the user
+        await pool.query(
+            'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+            [userId, `Admin added ${points} points to your account${reason ? ': ' + reason : ''}`, 'admin_points_added']
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'add_points', `Added ${points} points to user ID ${userId}${reason ? ' - Reason: ' + reason : ''}`);
 
         res.json({ success: true, message: `Added ${points} points successfully` });
     } catch (error) {
@@ -2024,7 +2022,7 @@ router.post('/admin/add-points', authenticateAdmin, checkPermission('manage_user
 
 // Deduct points from user (admin)
 router.post('/admin/deduct-points', authenticateAdmin, checkPermission('manage_users'), async (req, res) => {
-    const { userId, points } = req.body;
+    const { userId, points, reason } = req.body;
 
     if (!userId || !points || points <= 0) {
         return res.status(400).json({ error: 'Valid user ID and points required' });
@@ -2033,30 +2031,37 @@ router.post('/admin/deduct-points', authenticateAdmin, checkPermission('manage_u
     try {
         const pool = req.app.get('db');
 
-        // Check current available points
-        const pointsResult = await pool.query(
-            `SELECT COALESCE(SUM(points_awarded), 0) as total_points
-       FROM submissions 
-       WHERE user_id = $1 AND status = 'active'`,
+        // Get current points
+        const userResult = await pool.query(
+            'SELECT points FROM users WHERE id = $1',
             [userId]
         );
 
-        const currentPoints = parseInt(pointsResult.rows[0].total_points);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const currentPoints = parseInt(userResult.rows[0].points);
 
         if (currentPoints < points) {
             return res.status(400).json({
-                error: `Cannot deduct ${points} points. User only has ${currentPoints} available points.`
+                error: `Cannot deduct ${points} points. User only has ${currentPoints} points.`
             });
         }
 
-        // Create a negative submission to deduct points
+        // Directly update user's points
         await pool.query(
-            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
-       VALUES ($1, ARRAY['/uploads/admin-deduct.jpg'], $2, $3, 'active')`,
-            [userId, -points, -points]
+            'UPDATE users SET points = points - $1 WHERE id = $2',
+            [points, userId]
         );
 
-        await logAdminActivity(pool, req.admin.adminId, 'deduct_points', `Deducted ${points} points from user ID ${userId}`);
+        // Create a notification for the user
+        await pool.query(
+            'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+            [userId, `Admin deducted ${points} points from your account${reason ? ': ' + reason : ''}`, 'admin_points_deducted']
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'deduct_points', `Deducted ${points} points from user ID ${userId}${reason ? ' - Reason: ' + reason : ''}`);
 
         res.json({ success: true, message: `Deducted ${points} points successfully` });
     } catch (error) {
@@ -2125,22 +2130,17 @@ router.post('/cancel-submission', authenticateUser, async (req, res) => {
     }
 });
 
-
-// Get user profile (admin)
 router.get('/admin/user-profile/:userId', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     const { userId } = req.params;
 
     try {
         const pool = req.app.get('db');
 
-        // Get user info with total points
+        // Get user info directly from users table
         const user = await pool.query(
-            `SELECT u.id, u.whatsapp_number, u.created_at,
-              COALESCE(SUM(s.points_awarded), 0) as total_points
-       FROM users u
-       LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-       WHERE u.id = $1
-       GROUP BY u.id, u.whatsapp_number, u.created_at`,
+            `SELECT u.id, u.whatsapp_number, u.points, u.created_at, u.referral_code
+             FROM users u
+             WHERE u.id = $1`,
             [userId]
         );
 
@@ -2148,7 +2148,20 @@ router.get('/admin/user-profile/:userId', authenticateAdmin, checkPermission('vi
             return res.status(404).json({ error: 'User not found' });
         }
 
-        res.json({ user: user.rows[0] });
+        // Get submission count separately
+        const submissionCount = await pool.query(
+            `SELECT COUNT(*) as total_submissions
+             FROM submissions
+             WHERE user_id = $1 AND status = 'active'`,
+            [userId]
+        );
+
+        res.json({
+            user: {
+                ...user.rows[0],
+                total_submissions: parseInt(submissionCount.rows[0].total_submissions)
+            }
+        });
     } catch (error) {
         console.error('Failed to fetch user profile:', error);
         res.status(500).json({ error: 'Failed to fetch user profile' });
