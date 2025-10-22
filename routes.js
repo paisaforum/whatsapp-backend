@@ -3698,6 +3698,7 @@ router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
 });
 
 // Spin the wheel
+// Spin the wheel
 router.post('/spin', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -3708,7 +3709,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
         // Get user spins
         const userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
         console.log('🎰 Current spins:', userSpins.rows[0]);
-        
+
         if (userSpins.rows.length === 0) {
             return res.status(400).json({ error: 'Spin data not found' });
         }
@@ -3743,18 +3744,13 @@ router.post('/spin', authenticateUser, async (req, res) => {
         const prizes = JSON.parse(settings.rows[0].setting_value);
 
         // ============ DYNAMIC WEIGHTED RANDOM SELECTION ============
-        // Generate weights that heavily favor lower prizes
-        // Using exponential decay: first prize gets highest weight, last gets lowest
         const weights = prizes.map((prize, index) => {
-            // Exponential weighting: 2^(n-i-1) where n is total prizes and i is index
-            // First prize (index 0) gets highest weight, last prize gets weight of 1
             return Math.pow(2, prizes.length - index - 1);
         });
 
         console.log('🎲 Prizes:', prizes);
         console.log('⚖️ Weights:', weights);
 
-        // Calculate probabilities for logging
         const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
         const probabilities = weights.map(w => ((w / totalWeight) * 100).toFixed(2) + '%');
         console.log('📊 Probabilities:', probabilities);
@@ -3800,16 +3796,23 @@ router.post('/spin', authenticateUser, async (req, res) => {
             [userId, prize, spinType]
         );
 
+        // IMPORTANT: Return both the prize amount AND the exact segment index
+        // The frontend wheel segments should match the prizes array order
         res.json({
+            success: true,
             message: 'Spin successful!',
-            prize,
-            prizeIndex
+            prize: prize,
+            prizeIndex: prizeIndex,  // This tells frontend which segment to land on
+            totalPrizes: prizes.length // Helps frontend validate
         });
     } catch (error) {
         console.error('Error spinning:', error);
         res.status(500).json({ error: 'Failed to spin' });
     }
 });
+
+
+
 // Award bonus spin (called after X shares)
 router.post('/award-bonus-spin', authenticateUser, async (req, res) => {
     try {
@@ -4235,6 +4238,7 @@ router.get('/admin/activities/:id/stats', authenticateAdmin, async (req, res) =>
 // ==================== ADMIN SETTINGS ROUTES ====================
 
 // Get all feature settings
+// Get all feature settings
 router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -4248,34 +4252,91 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
              ORDER BY setting_key`
         );
 
-        // Convert array to flat object for frontend
-        const settingsObj = {};
+        // Default values
+        const settingsObj = {
+            // Streak defaults
+            streak_day1_bonus: '10',
+            streak_day2_bonus: '15',
+            streak_day3_bonus: '20',
+            streak_day4_bonus: '25',
+            streak_day5_bonus: '30',
+            streak_day6_bonus: '35',
+            streak_day7_bonus: '50',
+            // Referral defaults
+            referral_signup_bonus: '100',
+            referral_commission_percent: '10',
+            // Spin defaults
+            spin_prizes: '[10,20,30,50,100,200,500]',
+            daily_free_spins: '1',
+            shares_per_bonus_spin: '10',
+            // Milestone defaults
+            milestone_100: '10',
+            milestone_500: '50',
+            milestone_1000: '100',
+            milestone_5000: '500',
+            milestone_10000: '1000'
+        };
+
+        // Override with database values
         settings.rows.forEach(row => {
             settingsObj[row.setting_key] = row.setting_value;
         });
 
-        res.json(settingsObj);  // ← Changed from { settings: ... }
+        res.json(settingsObj);
     } catch (error) {
         console.error('Error fetching feature settings:', error);
         res.status(500).json({ error: 'Failed to fetch settings' });
     }
 });
+// Get spin settings for users (public-ish, requires auth)
+router.get('/spin-settings', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
 
+        const settings = await pool.query(
+            `SELECT setting_key, setting_value FROM settings 
+             WHERE setting_key IN ('daily_free_spins', 'shares_per_bonus_spin', 'spin_prizes')`
+        );
+
+        const settingsObj = {
+            daily_free_spins: 1,
+            shares_per_bonus_spin: 10,
+            prizes: [10, 20, 30, 50, 100, 200, 500]
+        };
+
+        settings.rows.forEach(row => {
+            if (row.setting_key === 'daily_free_spins') {
+                settingsObj.daily_free_spins = parseInt(row.setting_value);
+            } else if (row.setting_key === 'shares_per_bonus_spin') {
+                settingsObj.shares_per_bonus_spin = parseInt(row.setting_value);
+            } else if (row.setting_key === 'spin_prizes') {
+                settingsObj.prizes = JSON.parse(row.setting_value);
+            }
+        });
+
+        res.json(settingsObj);
+    } catch (error) {
+        console.error('Error fetching spin settings:', error);
+        res.status(500).json({ error: 'Failed to fetch spin settings' });
+    }
+});
 
 
 // Bulk update feature settings (NEW ROUTE)
+// Bulk update feature settings (FIXED WITH UPSERT)
 router.put('/admin/feature-settings', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const updates = req.body;
 
-        // Update each setting
+        // Update each setting using UPSERT (INSERT ... ON CONFLICT)
         for (const [key, value] of Object.entries(updates)) {
             await pool.query(
-                `UPDATE settings 
-                 SET setting_value = $1, updated_at = NOW() 
-                 WHERE setting_key = $2`,
-                [value.toString(), key]
+                `INSERT INTO settings (setting_key, setting_value, updated_at) 
+                 VALUES ($1, $2, NOW())
+                 ON CONFLICT (setting_key) 
+                 DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+                [key, value.toString()]
             );
         }
 
@@ -4286,12 +4347,17 @@ router.put('/admin/feature-settings', authenticateAdmin, async (req, res) => {
             `Updated feature settings: ${Object.keys(updates).join(', ')}`
         );
 
-        res.json({ message: 'Settings updated successfully' });
+        res.json({
+            message: 'Settings updated successfully',
+            updatedKeys: Object.keys(updates)
+        });
     } catch (error) {
         console.error('Error updating settings:', error);
         res.status(500).json({ error: 'Failed to update settings' });
     }
 });
+
+
 
 // KEEP the existing single-setting update route below
 // router.put('/admin/feature-settings/:key', ...)
