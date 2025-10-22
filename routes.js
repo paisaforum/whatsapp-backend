@@ -428,6 +428,40 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
+    // After successfully recording a share/activity participation
+    // Check if user earned a bonus spin
+    const sharesResult = await pool.query(
+        'SELECT COUNT(*) as share_count FROM activity_participations WHERE user_id = $1 AND completed = true',
+        [userId]
+    );
+
+    const totalShares = parseInt(sharesResult.rows[0].share_count);
+
+    // Get shares_per_bonus setting (OLD KEY)
+    const settingResult = await pool.query(
+        'SELECT setting_value FROM settings WHERE setting_key = $1',
+        ['spin_per_shares']
+    );
+
+    const sharesPerBonus = parseInt(settingResult.rows[0]?.setting_value) || 10;
+
+    console.log(`📊 User ${userId}: ${totalShares} shares, needs ${sharesPerBonus} for bonus`);
+
+    // Award bonus spin if threshold reached
+    if (totalShares % sharesPerBonus === 0) {
+        await pool.query(
+            `INSERT INTO user_spins (user_id, bonus_spins) 
+         VALUES ($1, 1) 
+         ON CONFLICT (user_id) 
+         DO UPDATE SET bonus_spins = user_spins.bonus_spins + 1`,
+            [userId]
+        );
+
+        console.log(`🎉 Awarded bonus spin to user ${userId}!`);
+    }
+
+
+    
 
     if (!userId || !recipientNumbers || !screenshots || screenshots.length === 0) {
         return res.status(400).json({ error: 'Missing required fields' });
@@ -4237,8 +4271,7 @@ router.get('/admin/activities/:id/stats', authenticateAdmin, async (req, res) =>
 
 // ==================== ADMIN SETTINGS ROUTES ====================
 
-// Get all feature settings
-// Get all feature settings
+// Get all feature settings - USE OLD KEYS
 router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -4252,10 +4285,10 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
              ORDER BY setting_key`
         );
 
-        // Default values
+        // Default values using OLD database keys
         const settingsObj = {
             // Streak defaults
-            streak_day1_bonus: '10',
+            streak_day1_bonus: '5',
             streak_day2_bonus: '15',
             streak_day3_bonus: '20',
             streak_day4_bonus: '25',
@@ -4263,12 +4296,12 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
             streak_day6_bonus: '35',
             streak_day7_bonus: '50',
             // Referral defaults
-            referral_signup_bonus: '100',
-            referral_commission_percent: '10',
-            // Spin defaults
-            spin_prizes: '[10,20,30,50,100,200,500]',
-            daily_free_spins: '1',
-            shares_per_bonus_spin: '10',
+            referral_signup_bonus: '50',
+            referral_commission_percent: '5',
+            // Spin defaults - MAP OLD KEYS TO FRONTEND KEYS
+            spin_prizes: '[10,2,3,5,1,20]',
+            daily_free_spins: '1',      // Frontend uses this
+            shares_per_bonus_spin: '10', // Frontend uses this
             // Milestone defaults
             milestone_100: '10',
             milestone_500: '50',
@@ -4279,15 +4312,107 @@ router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
 
         // Override with database values
         settings.rows.forEach(row => {
+            // Direct mapping for most keys
             settingsObj[row.setting_key] = row.setting_value;
+
+            // MAP OLD DATABASE KEYS → FRONTEND KEYS
+            if (row.setting_key === 'spin_free_per_day') {
+                settingsObj['daily_free_spins'] = row.setting_value;
+            }
+            if (row.setting_key === 'spin_per_shares') {
+                settingsObj['shares_per_bonus_spin'] = row.setting_value;
+            }
         });
 
+        console.log('📤 Admin settings:', settingsObj);
         res.json(settingsObj);
     } catch (error) {
         console.error('Error fetching feature settings:', error);
         res.status(500).json({ error: 'Failed to fetch settings' });
     }
 });
+
+// Bulk update feature settings - SAVE TO OLD KEYS
+router.put('/admin/feature-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const updates = req.body;
+
+        console.log('📥 Admin saving:', updates);
+
+        for (const [key, value] of Object.entries(updates)) {
+            let dbKey = key;
+
+            // MAP FRONTEND KEYS → OLD DATABASE KEYS
+            if (key === 'daily_free_spins') {
+                dbKey = 'spin_free_per_day';
+            } else if (key === 'shares_per_bonus_spin') {
+                dbKey = 'spin_per_shares';
+            }
+
+            console.log(`💾 Saving ${key} as ${dbKey} = ${value}`);
+
+            await pool.query(
+                `INSERT INTO settings (setting_key, setting_value, updated_at) 
+                 VALUES ($1, $2, NOW())
+                 ON CONFLICT (setting_key) 
+                 DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+                [dbKey, value.toString()]
+            );
+        }
+
+        await logAdminActivity(
+            pool,
+            req.admin.adminId,
+            'update_settings',
+            `Updated: ${Object.keys(updates).join(', ')}`
+        );
+
+        res.json({
+            message: 'Settings updated successfully',
+            updatedKeys: Object.keys(updates)
+        });
+    } catch (error) {
+        console.error('Error updating settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// Get spin settings for users - USE OLD KEYS
+router.get('/spin-settings', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const settings = await pool.query(
+            `SELECT setting_key, setting_value FROM settings 
+             WHERE setting_key IN ('spin_free_per_day', 'spin_per_shares', 'spin_prizes')`
+        );
+
+        const settingsObj = {
+            daily_free_spins: 1,
+            shares_per_bonus_spin: 10,
+            prizes: [10, 2, 3, 5, 1, 20]
+        };
+
+        settings.rows.forEach(row => {
+            if (row.setting_key === 'spin_free_per_day') {
+                settingsObj.daily_free_spins = parseInt(row.setting_value);
+            } else if (row.setting_key === 'spin_per_shares') {
+                settingsObj.shares_per_bonus_spin = parseInt(row.setting_value);
+            } else if (row.setting_key === 'spin_prizes') {
+                settingsObj.prizes = JSON.parse(row.setting_value);
+            }
+        });
+
+        console.log('📤 User spin settings:', settingsObj);
+        res.json(settingsObj);
+    } catch (error) {
+        console.error('Error fetching spin settings:', error);
+        res.status(500).json({ error: 'Failed to fetch spin settings' });
+    }
+});
+
+
 // Get spin settings for users (public-ish, requires auth)
 router.get('/spin-settings', authenticateUser, async (req, res) => {
     try {
