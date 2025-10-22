@@ -428,40 +428,6 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
-    // After successfully recording a share/activity participation
-    // Check if user earned a bonus spin
-    const sharesResult = await pool.query(
-        'SELECT COUNT(*) as share_count FROM activity_participations WHERE user_id = $1 AND completed = true',
-        [userId]
-    );
-
-    const totalShares = parseInt(sharesResult.rows[0].share_count);
-
-    // Get shares_per_bonus setting (OLD KEY)
-    const settingResult = await pool.query(
-        'SELECT setting_value FROM settings WHERE setting_key = $1',
-        ['spin_per_shares']
-    );
-
-    const sharesPerBonus = parseInt(settingResult.rows[0]?.setting_value) || 10;
-
-    console.log(`📊 User ${userId}: ${totalShares} shares, needs ${sharesPerBonus} for bonus`);
-
-    // Award bonus spin if threshold reached
-    if (totalShares % sharesPerBonus === 0) {
-        await pool.query(
-            `INSERT INTO user_spins (user_id, bonus_spins) 
-         VALUES ($1, 1) 
-         ON CONFLICT (user_id) 
-         DO UPDATE SET bonus_spins = user_spins.bonus_spins + 1`,
-            [userId]
-        );
-
-        console.log(`🎉 Awarded bonus spin to user ${userId}!`);
-    }
-
-
-    
 
     if (!userId || !recipientNumbers || !screenshots || screenshots.length === 0) {
         return res.status(400).json({ error: 'Missing required fields' });
@@ -470,7 +436,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
     try {
         const pool = req.app.get('db');
         const numbers = JSON.parse(recipientNumbers);
-        let streakBonus = 0; // ← ADD THIS LINE
+        let streakBonus = 0;
 
         // Validate counts match
         if (numbers.length !== screenshots.length) {
@@ -482,7 +448,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
         const duplicateCheck = await pool.query(
             `SELECT recipient_number_hash FROM user_recipients 
-       WHERE user_id = $1 AND recipient_number_hash = ANY($2)`,
+             WHERE user_id = $1 AND recipient_number_hash = ANY($2)`,
             [userId, hashedNumbers]
         );
 
@@ -498,26 +464,20 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // Create submission
         const submission = await pool.query(
             `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
-       VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
+             VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
             [userId, screenshotPaths, numbers.length, numbers.length]
         );
 
         const submissionId = submission.rows[0].id;
 
-        // ← ADD THIS RIGHT HERE:
         // Update user's total points
         await pool.query(
             'UPDATE users SET points = points + $1 WHERE id = $2',
             [numbers.length, userId]
         );
 
-        // ==================== EXISTING SUBMIT-PROOF ROUTE - ADD THIS CODE ====================
-
-
-        // 1. UPDATE STREAK
         // 1. UPDATE STREAK
         try {
-
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
 
@@ -537,10 +497,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                 const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
 
                 if (day1Bonus > 0) {
-                    streakBonus = day1Bonus; // ← ADD THIS
+                    streakBonus = day1Bonus;
                     await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
 
-                    // ← ADD THIS: Update submission with streak bonus
                     await pool.query(
                         'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
                         [day1Bonus, submissionId]
@@ -565,22 +524,18 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
                     let newStreak = 1;
                     if (lastShareDate === yesterdayStr) {
-                        // Consecutive day - increment streak
                         newStreak = currentStreak + 1;
                     }
-                    // If not consecutive, streak resets to 1
 
                     // Get streak bonus for this specific day
                     streakBonus = 0;
                     let settingKey = '';
 
-                    // Check for specific day bonus (Day 1-7 and Day 30)
                     if (newStreak <= 7) {
                         settingKey = `streak_day${newStreak}_bonus`;
                     } else if (newStreak === 30) {
                         settingKey = 'streak_30day_bonus';
                     } else if (newStreak % 30 === 0) {
-                        // Every 30 days after first 30
                         settingKey = 'streak_30day_bonus';
                     }
 
@@ -595,34 +550,29 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                     // Update streak data
                     await pool.query(
                         `UPDATE user_streaks 
-                 SET current_streak = $1, 
-                     longest_streak = GREATEST(longest_streak, $1),
-                     last_share_date = $2,
-                     total_streak_bonuses = total_streak_bonuses + $3,
-                     updated_at = NOW()
-                 WHERE user_id = $4`,
+                         SET current_streak = $1, 
+                             longest_streak = GREATEST(longest_streak, $1),
+                             last_share_date = $2,
+                             total_streak_bonuses = total_streak_bonuses + $3,
+                             updated_at = NOW()
+                         WHERE user_id = $4`,
                         [newStreak, today, streakBonus, userId]
                     );
 
-                    // Award bonus points if any
-                    // Award bonus points if any
                     if (streakBonus > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
 
-                        // ← ADD THIS: Update submission with streak bonus
                         await pool.query(
                             'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
                             [streakBonus, submissionId]
                         );
 
-                        // Notify user about milestone
                         await pool.query(
                             'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
                             [userId, `🔥 ${newStreak} day streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
                         );
                     }
                 }
-                // If already shared today, do nothing extra
             }
         } catch (error) {
             console.error('Streak update error:', error);
@@ -632,9 +582,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         try {
             const totalShares = await pool.query(
                 `SELECT COUNT(DISTINCT recipient_number_hash) as total
- FROM user_recipients ur
- JOIN submissions s ON ur.submission_id = s.id
-         WHERE s.user_id = $1 AND s.status = 'active'`,
+                 FROM user_recipients ur
+                 JOIN submissions s ON ur.submission_id = s.id
+                 WHERE s.user_id = $1 AND s.status = 'active'`,
                 [userId]
             );
 
@@ -642,8 +592,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
             const milestones = await pool.query(
                 `SELECT * FROM settings 
-         WHERE setting_key LIKE 'milestone_%' 
-         ORDER BY setting_key`
+                 WHERE setting_key LIKE 'milestone_%' 
+                 ORDER BY setting_key`
             );
 
             const milestonesObj = {};
@@ -708,7 +658,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             console.error('Referral commission error:', error);
         }
 
-        // 4. AWARD BONUS SPIN (every X shares)
+        // 4. AWARD BONUS SPIN (every X shares) - FIXED VERSION
         try {
             const spinSettings = await pool.query(
                 'SELECT setting_value FROM settings WHERE setting_key = $1',
@@ -719,16 +669,18 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
             const totalShares = await pool.query(
                 `SELECT COUNT(DISTINCT recipient_number_hash) as total
- FROM user_recipients ur
- JOIN submissions s ON ur.submission_id = s.id
-         WHERE s.user_id = $1 AND s.status = 'active'`,
+                 FROM user_recipients ur
+                 JOIN submissions s ON ur.submission_id = s.id
+                 WHERE s.user_id = $1 AND s.status = 'active'`,
                 [userId]
             );
 
             const shareCount = parseInt(totalShares.rows[0].total) || 0;
 
+            console.log(`📊 User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} for bonus spin`);
+
             // Award bonus spin for every X shares
-            if (shareCount % sharesNeeded === 0 && shareCount > 0) {
+            if (shareCount > 0 && shareCount % sharesNeeded === 0) {
                 let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
 
                 if (userSpins.rows.length === 0) {
@@ -742,19 +694,18 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                         [userId]
                     );
                 }
+
+                console.log(`🎉 Awarded bonus spin to user ${userId}!`);
             }
         } catch (error) {
             console.error('Bonus spin award error:', error);
         }
 
-
-
-        // Store recipient mappings
         // Store recipient mappings with both hash and actual number
         for (let i = 0; i < hashedNumbers.length; i++) {
             await pool.query(
                 `INSERT INTO user_recipients (user_id, recipient_number_hash, recipient_number, submission_id) 
-     VALUES ($1, $2, $3, $4)`,
+                 VALUES ($1, $2, $3, $4)`,
                 [userId, hashedNumbers[i], numbers[i], submissionId]
             );
         }
@@ -763,8 +714,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             success: true,
             submissionId: submissionId,
             pointsAwarded: numbers.length,
-            streakBonus: streakBonus || 0, // ← ADD THIS
-            totalEarned: numbers.length + (streakBonus || 0), // ← ADD THIS
+            streakBonus: streakBonus || 0,
+            totalEarned: numbers.length + (streakBonus || 0),
             message: 'Submission successful!'
         });
 
@@ -773,6 +724,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         res.status(500).json({ error: 'Submission failed' });
     }
 });
+
+
 
 
 // Request redemption
