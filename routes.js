@@ -4554,4 +4554,582 @@ router.get('/admin/feature-analytics', authenticateAdmin, async (req, res) => {
 
 
 
+
+// ==================== GLOBAL TASK SYSTEM ROUTES ====================
+
+// Get active campaign and assign leads to user (first visit or request more)
+router.get('/global-task/assign-leads/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { requestMore } = req.query; // ?requestMore=true
+
+        // Get campaign settings
+        const settingsRes = await pool.query(
+            'SELECT setting_key, setting_value FROM campaign_settings'
+        );
+        const settings = {};
+        settingsRes.rows.forEach(row => {
+            settings[row.setting_key] = row.setting_value;
+        });
+
+        const initialBatch = parseInt(settings.lead_initial_batch) || 200;
+        const requestBatch = parseInt(settings.lead_request_batch) || 50;
+        const expiryHours = parseInt(settings.assignment_expiry_hours) || 48;
+        const maxTimesAssigned = parseInt(settings.max_times_lead_assigned) || 3;
+
+        // Get active campaign
+        const campaignRes = await pool.query(
+            "SELECT * FROM campaigns WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
+        );
+
+        if (campaignRes.rows.length === 0) {
+            return res.status(404).json({ error: 'No active campaign found' });
+        }
+
+        const campaign = campaignRes.rows[0];
+
+        // Check if user already has assignments for this campaign
+        const existingRes = await pool.query(
+            "SELECT COUNT(*) as count FROM user_lead_assignments WHERE user_id = $1 AND campaign_id = $2 AND status IN ('pending', 'sent', 'proof_uploaded')",
+            [userId, campaign.id]
+        );
+
+        const hasExisting = parseInt(existingRes.rows[0].count) > 0;
+        const batchSize = (hasExisting || requestMore) ? requestBatch : initialBatch;
+
+        // Get available leads
+        const leadsRes = await pool.query(
+            `SELECT * FROM leads 
+             WHERE campaign_id = $1 
+             AND status = 'available' 
+             AND times_assigned < $2
+             ORDER BY times_assigned ASC, created_at ASC
+             LIMIT $3`,
+            [campaign.id, maxTimesAssigned, batchSize]
+        );
+
+        if (leadsRes.rows.length === 0) {
+            return res.status(404).json({ error: 'No leads available at the moment' });
+        }
+
+        const leads = leadsRes.rows;
+        const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
+
+        // Assign leads to user
+        for (const lead of leads) {
+            await pool.query(
+                `INSERT INTO user_lead_assignments 
+                 (user_id, campaign_id, lead_id, status, expires_at)
+                 VALUES ($1, $2, $3, 'pending', $4)
+                 ON CONFLICT (user_id, lead_id) DO NOTHING`,
+                [userId, campaign.id, lead.id, expiresAt]
+            );
+
+            // Update lead status and times_assigned
+            await pool.query(
+                "UPDATE leads SET status = 'assigned', times_assigned = times_assigned + 1 WHERE id = $1",
+                [lead.id]
+            );
+        }
+
+        res.json({
+            campaign,
+            leadsAssigned: leads.length,
+            message: `${leads.length} leads assigned successfully`
+        });
+    } catch (error) {
+        console.error('Error assigning leads:', error);
+        res.status(500).json({ error: 'Failed to assign leads' });
+    }
+});
+
+// Get user's assigned leads with status
+router.get('/global-task/my-leads/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { campaignId } = req.query;
+
+        let query = `
+            SELECT 
+                ula.id as assignment_id,
+                ula.status as assignment_status,
+                ula.assigned_at,
+                ula.expires_at,
+                ula.sent_at,
+                ula.proof_uploaded_at,
+                ula.completed_at,
+                ula.points_awarded,
+                ula.rejection_reason,
+                l.id as lead_id,
+                l.phone_number,
+                l.lead_name,
+                l.lead_city,
+                c.id as campaign_id,
+                c.title as campaign_title,
+                c.message_template,
+                c.offer_image_url,
+                c.points_per_lead
+            FROM user_lead_assignments ula
+            JOIN leads l ON ula.lead_id = l.id
+            JOIN campaigns c ON ula.campaign_id = c.id
+            WHERE ula.user_id = $1
+        `;
+        
+        const params = [userId];
+        
+        if (campaignId) {
+            query += ' AND ula.campaign_id = $2';
+            params.push(campaignId);
+        }
+        
+        query += ' ORDER BY ula.assigned_at DESC';
+
+        const result = await pool.query(query, params);
+
+        // Group by status
+        const leads = {
+            pending: [],
+            sent: [],
+            proof_uploaded: [],
+            approved: [],
+            rejected: [],
+            expired: []
+        };
+
+        result.rows.forEach(row => {
+            leads[row.assignment_status].push(row);
+        });
+
+        // Calculate progress
+        const total = result.rows.length;
+        const completed = leads.approved.length;
+        const pending = leads.pending.length;
+        const sent = leads.sent.length;
+
+        res.json({
+            leads,
+            progress: {
+                total,
+                pending,
+                sent,
+                completed,
+                percentage: total > 0 ? ((completed / total) * 100).toFixed(1) : 0
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching user leads:', error);
+        res.status(500).json({ error: 'Failed to fetch leads' });
+    }
+});
+
+// Mark lead as sent (user clicked Send button)
+router.put('/global-task/mark-sent/:assignmentId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { assignmentId } = req.params;
+        const { userId } = req.body;
+
+        await pool.query(
+            "UPDATE user_lead_assignments SET status = 'sent', sent_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2",
+            [assignmentId, userId]
+        );
+
+        res.json({ message: 'Lead marked as sent' });
+    } catch (error) {
+        console.error('Error marking lead as sent:', error);
+        res.status(500).json({ error: 'Failed to update status' });
+    }
+});
+
+// Upload proof for a lead
+router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.single('screenshot'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { assignmentId, userId, additionalNotes } = req.body;
+
+        if (!req.file) {
+            return res.status(400).json({ error: 'Screenshot is required' });
+        }
+
+        // Get assignment details
+        const assignmentRes = await pool.query(
+            'SELECT * FROM user_lead_assignments WHERE id = $1 AND user_id = $2',
+            [assignmentId, userId]
+        );
+
+        if (assignmentRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Assignment not found' });
+        }
+
+        const assignment = assignmentRes.rows[0];
+
+        // Get settings
+        const settingsRes = await pool.query(
+            "SELECT setting_value FROM campaign_settings WHERE setting_key IN ('instant_points_award', 'points_per_lead')"
+        );
+        const instantAward = settingsRes.rows.find(r => r.setting_key === 'instant_points_award')?.setting_value === 'true';
+        const pointsPerLead = parseInt(settingsRes.rows.find(r => r.setting_key === 'points_per_lead')?.setting_value) || 1;
+
+        const screenshotUrl = `/uploads/submissions/${req.file.filename}`;
+
+        // Create submission
+        await pool.query(
+            `INSERT INTO lead_submissions 
+             (assignment_id, user_id, lead_id, campaign_id, screenshot_url, additional_notes, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
+            [assignmentId, userId, assignment.lead_id, assignment.campaign_id, screenshotUrl, additionalNotes]
+        );
+
+        // Update assignment status
+        await pool.query(
+            "UPDATE user_lead_assignments SET status = 'proof_uploaded', proof_uploaded_at = NOW(), updated_at = NOW() WHERE id = $1",
+            [assignmentId]
+        );
+
+        // Award points instantly if setting enabled
+        if (instantAward) {
+            await pool.query(
+                'UPDATE users SET points = points + $1 WHERE id = $2',
+                [pointsPerLead, userId]
+            );
+            await pool.query(
+                'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
+                [pointsPerLead, assignmentId]
+            );
+        }
+
+        res.json({
+            message: 'Proof uploaded successfully',
+            pointsAwarded: instantAward ? pointsPerLead : 0,
+            instantAward
+        });
+    } catch (error) {
+        console.error('Error uploading proof:', error);
+        res.status(500).json({ error: 'Failed to upload proof' });
+    }
+});
+
+// Get campaign settings
+router.get('/global-task/settings', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const result = await pool.query('SELECT setting_key, setting_value FROM campaign_settings');
+        
+        const settings = {};
+        result.rows.forEach(row => {
+            settings[row.setting_key] = row.setting_value;
+        });
+
+        res.json({ settings });
+    } catch (error) {
+        console.error('Error fetching campaign settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// ==================== ADMIN ROUTES - GLOBAL TASK ====================
+
+// Get all campaigns
+router.get('/admin/campaigns', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const result = await pool.query(
+            'SELECT * FROM campaigns ORDER BY created_at DESC'
+        );
+        res.json({ campaigns: result.rows });
+    } catch (error) {
+        console.error('Error fetching campaigns:', error);
+        res.status(500).json({ error: 'Failed to fetch campaigns' });
+    }
+});
+
+// Create campaign
+router.post('/admin/campaigns', authenticateAdmin, uploadOffer.single('offer_image'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { title, description, messageTemplate, pointsPerLead } = req.body;
+
+        const offerImageUrl = req.file ? `/uploads/offers/${req.file.filename}` : null;
+
+        const result = await pool.query(
+            `INSERT INTO campaigns (title, description, offer_image_url, message_template, points_per_lead)
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [title, description, offerImageUrl, messageTemplate, pointsPerLead || 1]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'create_campaign', `Created campaign: ${title}`);
+
+        res.json({ campaign: result.rows[0] });
+    } catch (error) {
+        console.error('Error creating campaign:', error);
+        res.status(500).json({ error: 'Failed to create campaign' });
+    }
+});
+
+// Update campaign status
+router.put('/admin/campaigns/:id/status', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { status } = req.body;
+
+        await pool.query(
+            'UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2',
+            [status, id]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_campaign', `Updated campaign ${id} status to ${status}`);
+
+        res.json({ message: 'Campaign status updated' });
+    } catch (error) {
+        console.error('Error updating campaign:', error);
+        res.status(500).json({ error: 'Failed to update campaign' });
+    }
+});
+
+// Bulk upload leads
+router.post('/admin/campaigns/:id/upload-leads', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { leads } = req.body; // Array of {phone_number, lead_name, lead_city}
+
+        if (!Array.isArray(leads) || leads.length === 0) {
+            return res.status(400).json({ error: 'Leads array is required' });
+        }
+
+        let inserted = 0;
+        let skipped = 0;
+
+        for (const lead of leads) {
+            try {
+                await pool.query(
+                    `INSERT INTO leads (campaign_id, phone_number, lead_name, lead_city)
+                     VALUES ($1, $2, $3, $4)`,
+                    [id, lead.phone_number, lead.lead_name || null, lead.lead_city || null]
+                );
+                inserted++;
+            } catch (err) {
+                skipped++;
+            }
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'upload_leads', `Uploaded ${inserted} leads to campaign ${id}`);
+
+        res.json({
+            message: 'Leads uploaded',
+            inserted,
+            skipped,
+            total: leads.length
+        });
+    } catch (error) {
+        console.error('Error uploading leads:', error);
+        res.status(500).json({ error: 'Failed to upload leads' });
+    }
+});
+
+// Get pending lead submissions for review
+router.get('/admin/lead-submissions', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { status, page = 1, limit = 20 } = req.query;
+        const offset = (page - 1) * limit;
+
+        let query = `
+            SELECT 
+                ls.*,
+                u.whatsapp_number,
+                l.phone_number as lead_phone,
+                c.title as campaign_title,
+                ula.points_awarded
+            FROM lead_submissions ls
+            JOIN users u ON ls.user_id = u.id
+            JOIN leads l ON ls.lead_id = l.id
+            JOIN campaigns c ON ls.campaign_id = c.id
+            JOIN user_lead_assignments ula ON ls.assignment_id = ula.id
+            WHERE 1=1
+        `;
+
+        const params = [];
+        let paramCount = 1;
+
+        if (status) {
+            query += ` AND ls.status = $${paramCount}`;
+            params.push(status);
+            paramCount++;
+        }
+
+        query += ` ORDER BY ls.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+
+        const countRes = await pool.query(
+            'SELECT COUNT(*) FROM lead_submissions WHERE status = $1',
+            [status || 'pending']
+        );
+
+        res.json({
+            submissions: result.rows,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: parseInt(countRes.rows[0].count),
+                totalPages: Math.ceil(parseInt(countRes.rows[0].count) / limit)
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching submissions:', error);
+        res.status(500).json({ error: 'Failed to fetch submissions' });
+    }
+});
+
+// Review lead submission (approve/reject)
+router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { action, adminNotes } = req.body; // action: 'approve' or 'reject'
+
+        // Get submission details
+        const submissionRes = await pool.query(
+            'SELECT * FROM lead_submissions WHERE id = $1',
+            [id]
+        );
+
+        if (submissionRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Submission not found' });
+        }
+
+        const submission = submissionRes.rows[0];
+
+        // Get assignment details
+        const assignmentRes = await pool.query(
+            'SELECT * FROM user_lead_assignments WHERE id = $1',
+            [submission.assignment_id]
+        );
+        const assignment = assignmentRes.rows[0];
+
+        if (action === 'approve') {
+            // Update submission
+            await pool.query(
+                `UPDATE lead_submissions 
+                 SET status = 'approved', admin_notes = $1, reviewed_by = $2, reviewed_at = NOW()
+                 WHERE id = $3`,
+                [adminNotes, req.admin.adminId, id]
+            );
+
+            // Update assignment
+            await pool.query(
+                "UPDATE user_lead_assignments SET status = 'approved', completed_at = NOW() WHERE id = $1",
+                [submission.assignment_id]
+            );
+
+            // If points not awarded yet, award now
+            if (assignment.points_awarded === 0) {
+                const pointsRes = await pool.query(
+                    "SELECT setting_value FROM campaign_settings WHERE setting_key = 'points_per_lead'"
+                );
+                const points = parseInt(pointsRes.rows[0]?.setting_value) || 1;
+
+                await pool.query(
+                    'UPDATE users SET points = points + $1 WHERE id = $2',
+                    [points, submission.user_id]
+                );
+                await pool.query(
+                    'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
+                    [points, submission.assignment_id]
+                );
+            }
+
+        } else if (action === 'reject') {
+            // Update submission
+            await pool.query(
+                `UPDATE lead_submissions 
+                 SET status = 'rejected', admin_notes = $1, reviewed_by = $2, reviewed_at = NOW()
+                 WHERE id = $3`,
+                [adminNotes, req.admin.adminId, id]
+            );
+
+            // Update assignment
+            await pool.query(
+                "UPDATE user_lead_assignments SET status = 'rejected', rejection_reason = $1 WHERE id = $2",
+                [adminNotes, submission.assignment_id]
+            );
+
+            // Deduct points if already awarded
+            if (assignment.points_awarded > 0) {
+                await pool.query(
+                    'UPDATE users SET points = points - $1 WHERE id = $2',
+                    [assignment.points_awarded, submission.user_id]
+                );
+            }
+
+            // Return lead to pool
+            await pool.query(
+                "UPDATE leads SET status = 'available', times_rejected = times_rejected + 1 WHERE id = $1",
+                [submission.lead_id]
+            );
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'review_submission', `${action} submission ${id}`);
+
+        res.json({ message: `Submission ${action}d successfully` });
+    } catch (error) {
+        console.error('Error reviewing submission:', error);
+        res.status(500).json({ error: 'Failed to review submission' });
+    }
+});
+
+// Update campaign settings
+router.put('/admin/campaign-settings/:key', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { key } = req.params;
+        const { value } = req.body;
+
+        await pool.query(
+            'UPDATE campaign_settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
+            [value, key]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_campaign_setting', `Updated ${key} to ${value}`);
+
+        res.json({ message: 'Setting updated successfully' });
+    } catch (error) {
+        console.error('Error updating setting:', error);
+        res.status(500).json({ error: 'Failed to update setting' });
+    }
+});
+
+// Get campaign statistics
+router.get('/admin/campaigns/:id/stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const stats = await pool.query(
+            `SELECT 
+                COUNT(DISTINCT ula.user_id) as total_users,
+                COUNT(ula.id) as total_assignments,
+                COUNT(CASE WHEN ula.status = 'approved' THEN 1 END) as completed,
+                COUNT(CASE WHEN ula.status = 'rejected' THEN 1 END) as rejected,
+                COUNT(CASE WHEN ula.status IN ('pending', 'sent') THEN 1 END) as pending,
+                SUM(ula.points_awarded) as total_points_awarded
+             FROM user_lead_assignments ula
+             WHERE ula.campaign_id = $1`,
+            [id]
+        );
+
+        res.json({ stats: stats.rows[0] });
+    } catch (error) {
+        console.error('Error fetching campaign stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+// ==================== END GLOBAL TASK ROUTES ====================
+
 module.exports = router;
