@@ -4845,28 +4845,7 @@ router.get('/admin/campaigns', authenticateAdmin, async (req, res) => {
     }
 });
 
-// Create campaign
-router.post('/admin/campaigns', authenticateAdmin, uploadOffer.single('offer_image'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { title, description, messageTemplate, pointsPerLead } = req.body;
 
-        const offerImageUrl = req.file ? `/uploads/offers/${req.file.filename}` : null;
-
-        const result = await pool.query(
-            `INSERT INTO campaigns (title, description, offer_image_url, message_template, points_per_lead)
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [title, description, offerImageUrl, messageTemplate, pointsPerLead || 1]
-        );
-
-        await logAdminActivity(pool, req.admin.adminId, 'create_campaign', `Created campaign: ${title}`);
-
-        res.json({ campaign: result.rows[0] });
-    } catch (error) {
-        console.error('Error creating campaign:', error);
-        res.status(500).json({ error: 'Failed to create campaign' });
-    }
-});
 
 // ========== ADD THESE ROUTES TO YOUR routes.js FILE ==========
 // Add them after the "// Create campaign" route (around line 4869)
@@ -4911,6 +4890,8 @@ router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offer_
             paramCount++;
         }
 
+        // ⬇️ ADD THIS LINE
+        updates.push(`status = 'active'`);m
         updates.push(`updated_at = NOW()`);
         values.push(id);
 
@@ -4953,31 +4934,41 @@ router.get('/admin/campaigns/:id/leads-stats', authenticateAdmin, async (req, re
     }
 });
 
+// Clear all leads for a campaign (add after the leads-stats route)
+router.delete('/admin/campaigns/:id/leads', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        // Delete all user assignments for this campaign
+        await pool.query(
+            'DELETE FROM user_lead_assignments WHERE campaign_id = $1',
+            [id]
+        );
+
+        // Delete all leads for this campaign
+        const result = await pool.query(
+            'DELETE FROM leads WHERE campaign_id = $1 RETURNING *',
+            [id]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'clear_leads', `Cleared ${result.rowCount} leads from campaign ${id}`);
+
+        res.json({
+            message: 'All leads cleared successfully',
+            deleted: result.rowCount
+        });
+    } catch (error) {
+        console.error('Error clearing leads:', error);
+        res.status(500).json({ error: 'Failed to clear leads' });
+    }
+});
+
 // ========== END OF ROUTES TO ADD ==========
 
 
 
 
-// Update campaign status
-router.put('/admin/campaigns/:id/status', authenticateAdmin, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { id } = req.params;
-        const { status } = req.body;
-
-        await pool.query(
-            'UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2',
-            [status, id]
-        );
-
-        await logAdminActivity(pool, req.admin.adminId, 'update_campaign', `Updated campaign ${id} status to ${status}`);
-
-        res.json({ message: 'Campaign status updated' });
-    } catch (error) {
-        console.error('Error updating campaign:', error);
-        res.status(500).json({ error: 'Failed to update campaign' });
-    }
-});
 
 // Bulk upload leads
 router.post('/admin/campaigns/:id/upload-leads', authenticateAdmin, async (req, res) => {
