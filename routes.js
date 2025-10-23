@@ -4977,7 +4977,7 @@ router.get('/admin/campaigns', authenticateAdmin, async (req, res) => {
 // Add them after the "// Create campaign" route (around line 4869)
 
 // Update campaign configuration
-router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offer_image'), async (req, res) => {
+router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offerImage'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
