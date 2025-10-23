@@ -4891,7 +4891,7 @@ router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offer_
         }
 
         // ⬇️ ADD THIS LINE
-        updates.push(`status = 'active'`);m
+        updates.push(`status = 'active'`);
         updates.push(`updated_at = NOW()`);
         values.push(id);
 
