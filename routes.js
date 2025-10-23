@@ -7,6 +7,23 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
+const path = require('path');
+const XLSX = require('xlsx');
+
+const uploadLeadsFile = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 100 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowed = ['.csv', '.txt', '.xlsx', '.xls'];
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (allowed.includes(ext)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only CSV, TXT, or XLSX files allowed'));
+        }
+    }
+});
+
 // Middleware to check if admin is super_admin
 const requireSuperAdmin = (req, res, next) => {
     if (req.admin.role !== 'super_admin') {
@@ -5121,6 +5138,79 @@ router.post('/admin/campaigns/:id/upload-leads', authenticateAdmin, async (req, 
     }
 });
 
+
+router.post('/admin/campaigns/:id/upload-leads-file', authenticateAdmin, uploadLeadsFile.single('file'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const file = req.file;
+
+        if (!file) {
+            return res.status(400).json({ error: 'File is required' });
+        }
+
+        console.log(`📁 Processing: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+
+        let phoneNumbers = [];
+        const ext = path.extname(file.originalname).toLowerCase();
+
+        if (ext === '.csv' || ext === '.txt') {
+            const content = file.buffer.toString('utf-8');
+            phoneNumbers = content.split(/[\r\n]+/).map(line => line.trim()).filter(line => line && /^\d+$/.test(line));
+        }
+        else if (ext === '.xlsx' || ext === '.xls') {
+            const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+            phoneNumbers = data.map(row => String(row[0] || '').trim()).filter(num => num && /^\d+$/.test(num));
+        }
+
+        phoneNumbers = [...new Set(phoneNumbers)];
+        console.log(`📊 ${phoneNumbers.length} unique numbers`);
+
+        if (phoneNumbers.length === 0) {
+            return res.status(400).json({ error: 'No valid phone numbers found' });
+        }
+
+        const startTime = Date.now();
+        let inserted = 0;
+
+        // Batch insert - 1000 at a time
+        const batchSize = 1000;
+        for (let i = 0; i < phoneNumbers.length; i += batchSize) {
+            const batch = phoneNumbers.slice(i, i + batchSize);
+            const valuesList = batch.map((phone, idx) => `($1, $${idx + 2}, 'available', 0, NOW())`).join(',');
+
+            const result = await pool.query(
+                `INSERT INTO leads (campaign_id, phone_number, status, times_assigned, created_at)
+                 VALUES ${valuesList}
+                 ON CONFLICT (campaign_id, phone_number) DO NOTHING
+                 RETURNING id`,
+                [id, ...batch]
+            );
+
+            inserted += result.rowCount;
+            console.log(`✅ Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(phoneNumbers.length / batchSize)}`);
+        }
+
+        const duration = Date.now() - startTime;
+        const skipped = phoneNumbers.length - inserted;
+
+        console.log(`✅ Done: ${inserted} inserted, ${skipped} skipped in ${(duration / 1000).toFixed(2)}s`);
+
+        res.json({
+            message: 'Leads uploaded',
+            inserted,
+            skipped,
+            total: phoneNumbers.length,
+            duration: `${(duration / 1000).toFixed(2)}s`
+        });
+    } catch (error) {
+        console.error('❌ Upload error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // 1. FIX: Get lead submissions with proper filtering
 // REPLACE the existing /admin/lead-submissions route with this:
 router.get('/admin/lead-submissions', authenticateAdmin, async (req, res) => {
@@ -5218,9 +5308,9 @@ router.post('/admin/campaigns/:campaignId/master-clear', authenticateAdmin, asyn
 
         // Log admin activity
         await logAdminActivity(
-            pool, 
-            req.admin.adminId, 
-            'master_clear_leads', 
+            pool,
+            req.admin.adminId,
+            'master_clear_leads',
             `Reset ${beforeStats.rows[0].completed_count} completed leads for campaign ${campaignId}`
         );
 
