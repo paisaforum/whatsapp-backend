@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
 const XLSX = require('xlsx');
 
 const uploadLeadsFile = multer({
