@@ -172,11 +172,12 @@ router.post('/register', async (req, res) => {
 
         // Create new user with referral code
         const newUser = await pool.query(
-            'INSERT INTO users (whatsapp_number, password_hash, referral_code, referred_by_code) VALUES ($1, $2, $3, $4) RETURNING id',
+            'INSERT INTO users (whatsapp_number, password_hash, referral_code, referred_by_code) VALUES ($1, $2, $3, $4) RETURNING id, whatsapp_number',
             [whatsappNumber, passwordHash, referralCode, referredByCode || null]
         );
 
         const userId = newUser.rows[0].id;
+        const userWhatsappNumber = newUser.rows[0].whatsapp_number;
 
         // If user was referred, create referral relationship
         if (referredByCode) {
@@ -220,17 +221,74 @@ router.post('/register', async (req, res) => {
             [userId]
         );
 
+        // ✨ AUTO-ASSIGN LEADS TO NEW USER
+        let leadsAssigned = 0;
+        try {
+            // Get initial batch size from settings
+            const settingsRes = await pool.query(
+                "SELECT setting_value FROM campaign_settings WHERE setting_key = 'lead_initial_batch'"
+            );
+            const initialBatch = parseInt(settingsRes.rows[0]?.setting_value) || 200;
 
-        // Create JWT token
-        const token = jwt.sign({ userId: userId }, JWT_SECRET, { expiresIn: '30d' });
+            // Get available leads
+            const availableLeads = await pool.query(
+                `SELECT l.id, l.phone_number, l.campaign_id, l.times_assigned
+                 FROM leads l
+                 WHERE l.campaign_id = 1 
+                 AND l.status = 'available'
+                 AND (l.times_assigned < 3 OR l.times_assigned IS NULL)
+                 ORDER BY 
+                    CASE WHEN l.times_assigned IS NULL THEN 0 ELSE l.times_assigned END ASC,
+                    l.created_at ASC
+                 LIMIT $1`,
+                [initialBatch]
+            );
+
+            if (availableLeads.rows.length > 0) {
+                // Create assignments for all leads
+                for (const lead of availableLeads.rows) {
+                    await pool.query(
+                        `INSERT INTO user_lead_assignments 
+                         (user_id, lead_id, campaign_id, status, assigned_at, created_at)
+                         VALUES ($1, $2, $3, 'pending', NOW(), NOW())`,
+                        [userId, lead.id, lead.campaign_id]  // ✅ Fixed: userId instead of newUser.id
+                    );
+                }
+
+                // Update leads times_assigned counter
+                const leadIds = availableLeads.rows.map(l => l.id);
+                await pool.query(
+                    `UPDATE leads 
+                     SET times_assigned = COALESCE(times_assigned, 0) + 1 
+                     WHERE id = ANY($1::int[])`,
+                    [leadIds]
+                );
+
+                leadsAssigned = availableLeads.rows.length;
+                console.log(`✅ Auto-assigned ${leadsAssigned} leads to new user ${userId}`);
+            }
+        } catch (assignError) {
+            console.error('⚠️ Error auto-assigning leads:', assignError);
+            // Don't fail registration if lead assignment fails
+        }
+
+        // Generate token (moved outside lead assignment try-catch)
+        const token = jwt.sign(
+            { userId, whatsapp_number: userWhatsappNumber },  // ✅ Fixed: Use correct variables
+            process.env.JWT_SECRET || 'your-secret-key',
+            { expiresIn: '30d' }
+        );
 
         res.json({
-            userId: userId,
-            token: token,
-            message: 'Account created successfully!'
+            message: 'Registration successful',
+            token,
+            userId,
+            whatsapp_number: userWhatsappNumber,
+            leadsAssigned
         });
+
     } catch (error) {
-        console.error('Registration error:', error);
+        console.error('❌ Registration error:', error);
         res.status(500).json({ error: 'Registration failed' });
     }
 });
@@ -4781,9 +4839,9 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
 
         const assignment = assignmentRes.rows[0];
 
-        // Get settings - NOW INCLUDING admin_review_required
+        // Get settings
         const settingsRes = await pool.query(
-            "SELECT setting_key, setting_value FROM campaign_settings WHERE setting_key IN ('instant_points_award', 'points_per_lead', 'admin_review_required')"
+            "SELECT setting_key, setting_value FROM campaign_settings WHERE setting_key IN ('instant_points_award', 'points_per_lead', 'admin_review_required', 'max_times_lead_assigned')"
         );
 
         const settings = {};
@@ -4792,11 +4850,11 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
         const instantAward = settings.instant_points_award === 'true';
         const adminReviewRequired = settings.admin_review_required === 'true';
         const pointsPerLead = parseInt(settings.points_per_lead) || 2;
+        const maxTimesAssigned = parseInt(settings.max_times_lead_assigned) || 3;
 
         const screenshotUrl = `/uploads/submissions/${req.file.filename}`;
-
-        // Determine submission status based on admin review requirement
         const submissionStatus = adminReviewRequired ? 'pending' : 'approved';
+        const assignmentStatus = adminReviewRequired ? 'proof_uploaded' : 'approved';
 
         // Create submission
         await pool.query(
@@ -4806,25 +4864,49 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
             [assignmentId, userId, assignment.lead_id, assignment.campaign_id, screenshotUrl, additionalNotes, submissionStatus]
         );
 
-        // Determine assignment status based on admin review requirement
-        const assignmentStatus = adminReviewRequired ? 'proof_uploaded' : 'approved';
-
         // Update assignment status
         await pool.query(
             "UPDATE user_lead_assignments SET status = $1, proof_uploaded_at = NOW(), updated_at = NOW() WHERE id = $2",
             [assignmentStatus, assignmentId]
         );
 
-        // Award points instantly if setting enabled
+        // ✅ ONLY award points and recycle lead if instant award (no admin review)
         if (instantAward) {
+            // Award points
             await pool.query(
                 'UPDATE users SET points = points + $1 WHERE id = $2',
                 [pointsPerLead, userId]
             );
             await pool.query(
-                'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
+                'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
                 [pointsPerLead, assignmentId]
             );
+
+            // Check if lead should return to pool
+            const leadCheck = await pool.query(
+                'SELECT times_assigned FROM leads WHERE id = $1',
+                [assignment.lead_id]
+            );
+
+            const currentTimesAssigned = leadCheck.rows[0].times_assigned || 0;
+
+            if (currentTimesAssigned < maxTimesAssigned) {
+                // Lead can be assigned again - return to available pool
+                await pool.query(
+                    "UPDATE leads SET status = 'available' WHERE id = $1",
+                    [assignment.lead_id]
+                );
+                console.log(`✅ Lead ${assignment.lead_id} returned to pool (${currentTimesAssigned}/${maxTimesAssigned} completions)`);
+            } else {
+                // Max reached - mark as completed permanently
+                await pool.query(
+                    "UPDATE leads SET status = 'completed' WHERE id = $1",
+                    [assignment.lead_id]
+                );
+                console.log(`🎯 Lead ${assignment.lead_id} completed permanently (${currentTimesAssigned}/${maxTimesAssigned} times)`);
+            }
+        } else {
+            console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
         }
 
         res.json({
@@ -5039,62 +5121,171 @@ router.post('/admin/campaigns/:id/upload-leads', authenticateAdmin, async (req, 
     }
 });
 
-// Get pending lead submissions for review
+// 1. FIX: Get lead submissions with proper filtering
+// REPLACE the existing /admin/lead-submissions route with this:
 router.get('/admin/lead-submissions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { status, page = 1, limit = 20 } = req.query;
-        const offset = (page - 1) * limit;
+        const { status } = req.query;
 
         let query = `
             SELECT 
-                ls.*,
+                ls.id,
+                ls.assignment_id,
+                ls.user_id,
+                ls.lead_id,
+                ls.campaign_id,
+                ls.screenshot_url,
+                ls.additional_notes,
+                ls.status,
+                ls.created_at,
+                ls.reviewed_at,
+                ls.admin_notes,
                 u.whatsapp_number,
                 l.phone_number as lead_phone,
                 c.title as campaign_title,
+                ula.status as assignment_status,
                 ula.points_awarded
             FROM lead_submissions ls
             JOIN users u ON ls.user_id = u.id
             JOIN leads l ON ls.lead_id = l.id
             JOIN campaigns c ON ls.campaign_id = c.id
             JOIN user_lead_assignments ula ON ls.assignment_id = ula.id
-            WHERE 1=1
         `;
 
         const params = [];
-        let paramCount = 1;
 
         if (status) {
-            query += ` AND ls.status = $${paramCount}`;
+            // ✅ FIX: Filter by submission status, not assignment status
+            query += ` WHERE ls.status = $1`;
             params.push(status);
-            paramCount++;
         }
 
-        query += ` ORDER BY ls.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
-        params.push(limit, offset);
+        query += ` ORDER BY ls.created_at DESC LIMIT 100`;
 
         const result = await pool.query(query, params);
 
-        const countRes = await pool.query(
-            'SELECT COUNT(*) FROM lead_submissions WHERE status = $1',
-            [status || 'pending']
-        );
-
-        res.json({
-            submissions: result.rows,
-            pagination: {
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total: parseInt(countRes.rows[0].count),
-                totalPages: Math.ceil(parseInt(countRes.rows[0].count) / limit)
-            }
-        });
+        res.json({ submissions: result.rows });
     } catch (error) {
         console.error('Error fetching submissions:', error);
         res.status(500).json({ error: 'Failed to fetch submissions' });
     }
 });
 
+// 2. NEW: Master Clear - Reset all completed leads
+router.post('/admin/campaigns/:campaignId/master-clear', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { campaignId } = req.params;
+        const { confirmCode } = req.body;
+
+        // Security: Require confirmation code
+        if (confirmCode !== 'RESET_ALL_LEADS') {
+            return res.status(400).json({ error: 'Invalid confirmation code' });
+        }
+
+        // Get stats before clearing
+        const beforeStats = await pool.query(
+            `SELECT 
+                COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
+                COUNT(*) FILTER (WHERE times_assigned >= 3) as maxed_out_count
+             FROM leads 
+             WHERE campaign_id = $1`,
+            [campaignId]
+        );
+
+        // Reset all completed leads back to available
+        await pool.query(
+            `UPDATE leads 
+             SET 
+                status = 'available',
+                times_assigned = 0,
+                times_rejected = 0,
+                updated_at = NOW()
+             WHERE campaign_id = $1 AND status = 'completed'`,
+            [campaignId]
+        );
+
+        // Archive old assignments (don't delete, keep for history)
+        await pool.query(
+            `UPDATE user_lead_assignments 
+             SET 
+                archived = true,
+                archived_at = NOW()
+             WHERE campaign_id = $1 AND status = 'approved'`,
+            [campaignId]
+        );
+
+        // Log admin activity
+        await logAdminActivity(
+            pool, 
+            req.admin.adminId, 
+            'master_clear_leads', 
+            `Reset ${beforeStats.rows[0].completed_count} completed leads for campaign ${campaignId}`
+        );
+
+        res.json({
+            message: 'Master clear completed successfully',
+            stats: {
+                leadsReset: parseInt(beforeStats.rows[0].completed_count),
+                maxedOutLeads: parseInt(beforeStats.rows[0].maxed_out_count),
+                assignmentsArchived: true
+            }
+        });
+    } catch (error) {
+        console.error('Error in master clear:', error);
+        res.status(500).json({ error: 'Failed to clear leads' });
+    }
+});
+
+// 3. NEW: Get detailed lead statistics
+router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { campaignId } = req.params;
+
+        // Get comprehensive stats
+        const result = await pool.query(
+            `SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE status = 'available') as available,
+                COUNT(*) FILTER (WHERE status = 'assigned') as assigned,
+                COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                COUNT(*) FILTER (WHERE status = 'blocked') as blocked,
+                COUNT(*) FILTER (WHERE times_assigned = 0) as fresh,
+                COUNT(*) FILTER (WHERE times_assigned = 1) as assigned_once,
+                COUNT(*) FILTER (WHERE times_assigned = 2) as assigned_twice,
+                COUNT(*) FILTER (WHERE times_assigned >= 3) as maxed_out,
+                AVG(times_assigned) as avg_assignments
+             FROM leads 
+             WHERE campaign_id = $1`,
+            [campaignId]
+        );
+
+        // Get user assignment stats
+        const userStats = await pool.query(
+            `SELECT 
+                COUNT(DISTINCT user_id) as total_users,
+                COUNT(*) as total_assignments,
+                COUNT(*) FILTER (WHERE status = 'approved') as completed_assignments
+             FROM user_lead_assignments
+             WHERE campaign_id = $1`,
+            [campaignId]
+        );
+
+        res.json({
+            leads: result.rows[0],
+            users: userStats.rows[0]
+        });
+    } catch (error) {
+        console.error('Error fetching detailed stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+
+
+// Review lead submission (approve/reject)
 // Review lead submission (approve/reject)
 router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, res) => {
     try {
@@ -5120,6 +5311,14 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
             [submission.assignment_id]
         );
         const assignment = assignmentRes.rows[0];
+
+        // Get settings for lead recycling
+        const settingsRes = await pool.query(
+            "SELECT setting_key, setting_value FROM campaign_settings WHERE setting_key IN ('points_per_lead', 'max_times_lead_assigned')"
+        );
+        const settings = {};
+        settingsRes.rows.forEach(r => settings[r.setting_key] = r.setting_value);
+        const maxTimesAssigned = parseInt(settings.max_times_lead_assigned) || 3;
 
         if (action === 'approve') {
             // Update submission
@@ -5153,6 +5352,30 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                 );
             }
 
+            // ✅ NEW: Lead Recycling Logic
+            const leadCheck = await pool.query(
+                'SELECT times_assigned FROM leads WHERE id = $1',
+                [submission.lead_id]
+            );
+
+            const currentTimesAssigned = leadCheck.rows[0].times_assigned || 0;
+
+            if (currentTimesAssigned < maxTimesAssigned) {
+                // Lead can be assigned again - return to available pool
+                await pool.query(
+                    "UPDATE leads SET status = 'available' WHERE id = $1",
+                    [submission.lead_id]
+                );
+                console.log(`✅ Lead ${submission.lead_id} returned to pool after admin approval (${currentTimesAssigned}/${maxTimesAssigned} completions)`);
+            } else {
+                // Max reached - mark as completed permanently
+                await pool.query(
+                    "UPDATE leads SET status = 'completed' WHERE id = $1",
+                    [submission.lead_id]
+                );
+                console.log(`🎯 Lead ${submission.lead_id} completed permanently (${currentTimesAssigned}/${maxTimesAssigned} times)`);
+            }
+
         } else if (action === 'reject') {
             // Update submission
             await pool.query(
@@ -5176,11 +5399,13 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                 );
             }
 
-            // Return lead to pool
+            // Return lead to pool (rejection doesn't count toward max_times_assigned)
             await pool.query(
-                "UPDATE leads SET status = 'available', times_rejected = times_rejected + 1 WHERE id = $1",
+                "UPDATE leads SET status = 'available', times_rejected = COALESCE(times_rejected, 0) + 1 WHERE id = $1",
                 [submission.lead_id]
             );
+
+            console.log(`❌ Lead ${submission.lead_id} returned to pool after rejection`);
         }
 
         await logAdminActivity(pool, req.admin.adminId, 'review_submission', `${action} submission ${id}`);
@@ -5191,6 +5416,8 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
         res.status(500).json({ error: 'Failed to review submission' });
     }
 });
+
+
 
 // Update campaign settings
 router.put('/admin/campaign-settings/:key', authenticateAdmin, async (req, res) => {
