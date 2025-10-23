@@ -4765,27 +4765,38 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
 
         const assignment = assignmentRes.rows[0];
 
-        // Get settings
+        // Get settings - NOW INCLUDING admin_review_required
         const settingsRes = await pool.query(
-            "SELECT setting_value FROM campaign_settings WHERE setting_key IN ('instant_points_award', 'points_per_lead')"
+            "SELECT setting_key, setting_value FROM campaign_settings WHERE setting_key IN ('instant_points_award', 'points_per_lead', 'admin_review_required')"
         );
-        const instantAward = settingsRes.rows.find(r => r.setting_key === 'instant_points_award')?.setting_value === 'true';
-        const pointsPerLead = parseInt(settingsRes.rows.find(r => r.setting_key === 'points_per_lead')?.setting_value) || 1;
+
+        const settings = {};
+        settingsRes.rows.forEach(r => settings[r.setting_key] = r.setting_value);
+
+        const instantAward = settings.instant_points_award === 'true';
+        const adminReviewRequired = settings.admin_review_required === 'true';
+        const pointsPerLead = parseInt(settings.points_per_lead) || 2;
 
         const screenshotUrl = `/uploads/submissions/${req.file.filename}`;
+
+        // Determine submission status based on admin review requirement
+        const submissionStatus = adminReviewRequired ? 'pending' : 'approved';
 
         // Create submission
         await pool.query(
             `INSERT INTO lead_submissions 
              (assignment_id, user_id, lead_id, campaign_id, screenshot_url, additional_notes, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-            [assignmentId, userId, assignment.lead_id, assignment.campaign_id, screenshotUrl, additionalNotes]
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [assignmentId, userId, assignment.lead_id, assignment.campaign_id, screenshotUrl, additionalNotes, submissionStatus]
         );
+
+        // Determine assignment status based on admin review requirement
+        const assignmentStatus = adminReviewRequired ? 'proof_uploaded' : 'approved';
 
         // Update assignment status
         await pool.query(
-            "UPDATE user_lead_assignments SET status = 'proof_uploaded', proof_uploaded_at = NOW(), updated_at = NOW() WHERE id = $1",
-            [assignmentId]
+            "UPDATE user_lead_assignments SET status = $1, proof_uploaded_at = NOW(), updated_at = NOW() WHERE id = $2",
+            [assignmentStatus, assignmentId]
         );
 
         // Award points instantly if setting enabled
@@ -4803,7 +4814,8 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
         res.json({
             message: 'Proof uploaded successfully',
             pointsAwarded: instantAward ? pointsPerLead : 0,
-            instantAward
+            instantAward,
+            requiresReview: adminReviewRequired
         });
     } catch (error) {
         console.error('Error uploading proof:', error);
