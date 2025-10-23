@@ -4725,6 +4725,40 @@ router.get('/global-task/my-leads/:userId', authenticateUser, async (req, res) =
 });
 
 
+
+// Mark lead as sent (after clicking Send button)
+router.put('/global-task/mark-sent/:assignmentId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { assignmentId } = req.params;
+        const { userId } = req.body;
+
+        // Verify assignment belongs to user
+        const checkRes = await pool.query(
+            'SELECT * FROM user_lead_assignments WHERE id = $1 AND user_id = $2',
+            [assignmentId, userId]
+        );
+
+        if (checkRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Assignment not found' });
+        }
+
+        // Update status to 'sent'
+        await pool.query(
+            "UPDATE user_lead_assignments SET status = 'sent', updated_at = NOW() WHERE id = $1",
+            [assignmentId]
+        );
+
+        res.json({
+            message: 'Marked as sent successfully',
+            status: 'sent'
+        });
+    } catch (error) {
+        console.error('Error marking as sent:', error);
+        res.status(500).json({ error: 'Failed to update status' });
+    }
+});
+
 // Upload proof for a lead
 router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.single('screenshot'), async (req, res) => {
     try {
