@@ -4676,14 +4676,14 @@ router.get('/global-task/my-leads/:userId', authenticateUser, async (req, res) =
             JOIN campaigns c ON ula.campaign_id = c.id
             WHERE ula.user_id = $1
         `;
-        
+
         const params = [userId];
-        
+
         if (campaignId) {
             query += ' AND ula.campaign_id = $2';
             params.push(campaignId);
         }
-        
+
         query += ' ORDER BY ula.assigned_at DESC';
 
         const result = await pool.query(query, params);
@@ -4816,7 +4816,7 @@ router.get('/global-task/settings', async (req, res) => {
     try {
         const pool = req.app.get('db');
         const result = await pool.query('SELECT setting_key, setting_value FROM campaign_settings');
-        
+
         const settings = {};
         result.rows.forEach(row => {
             settings[row.setting_key] = row.setting_value;
@@ -4867,6 +4867,96 @@ router.post('/admin/campaigns', authenticateAdmin, uploadOffer.single('offer_ima
         res.status(500).json({ error: 'Failed to create campaign' });
     }
 });
+
+// ========== ADD THESE ROUTES TO YOUR routes.js FILE ==========
+// Add them after the "// Create campaign" route (around line 4869)
+
+// Update campaign configuration
+router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offer_image'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { title, description, messageTemplate, pointsPerLead } = req.body;
+
+        const offerImageUrl = req.file ? `/uploads/offers/${req.file.filename}` : null;
+
+        // Build update query dynamically
+        const updates = [];
+        const values = [];
+        let paramCount = 1;
+
+        if (title) {
+            updates.push(`title = $${paramCount}`);
+            values.push(title);
+            paramCount++;
+        }
+        if (description !== undefined) {
+            updates.push(`description = $${paramCount}`);
+            values.push(description);
+            paramCount++;
+        }
+        if (messageTemplate) {
+            updates.push(`message_template = $${paramCount}`);
+            values.push(messageTemplate);
+            paramCount++;
+        }
+        if (pointsPerLead) {
+            updates.push(`points_per_lead = $${paramCount}`);
+            values.push(pointsPerLead);
+            paramCount++;
+        }
+        if (offerImageUrl) {
+            updates.push(`offer_image_url = $${paramCount}`);
+            values.push(offerImageUrl);
+            paramCount++;
+        }
+
+        updates.push(`updated_at = NOW()`);
+        values.push(id);
+
+        await pool.query(
+            `UPDATE campaigns SET ${updates.join(', ')} WHERE id = $${paramCount}`,
+            values
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_campaign', `Updated campaign ${id} configuration`);
+
+        res.json({ message: 'Campaign updated successfully' });
+    } catch (error) {
+        console.error('Error updating campaign:', error);
+        res.status(500).json({ error: 'Failed to update campaign' });
+    }
+});
+
+// Get leads statistics for a campaign
+router.get('/admin/campaigns/:id/leads-stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE status = 'available') as available,
+                COUNT(*) FILTER (WHERE status = 'assigned') as assigned,
+                COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                COUNT(*) FILTER (WHERE status = 'blocked') as blocked
+             FROM leads
+             WHERE campaign_id = $1`,
+            [id]
+        );
+
+        res.json({ stats: result.rows[0] });
+    } catch (error) {
+        console.error('Error fetching leads stats:', error);
+        res.status(500).json({ error: 'Failed to fetch leads statistics' });
+    }
+});
+
+// ========== END OF ROUTES TO ADD ==========
+
+
+
 
 // Update campaign status
 router.put('/admin/campaigns/:id/status', authenticateAdmin, async (req, res) => {
