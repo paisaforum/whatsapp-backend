@@ -5327,13 +5327,12 @@ router.post('/admin/campaigns/:campaignId/master-clear', authenticateAdmin, asyn
     }
 });
 
-// 3. NEW: Get detailed lead statistics
+// Get detailed lead statistics
 router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { campaignId } = req.params;
 
-        // Get comprehensive stats
         const result = await pool.query(
             `SELECT 
                 COUNT(*) as total,
@@ -5342,30 +5341,15 @@ router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmi
                 COUNT(*) FILTER (WHERE status = 'completed') as completed,
                 COUNT(*) FILTER (WHERE status = 'blocked') as blocked,
                 COUNT(*) FILTER (WHERE times_assigned = 0) as fresh,
-                COUNT(*) FILTER (WHERE times_assigned = 1) as assigned_once,
-                COUNT(*) FILTER (WHERE times_assigned = 2) as assigned_twice,
-                COUNT(*) FILTER (WHERE times_assigned >= 3) as maxed_out,
-                AVG(times_assigned) as avg_assignments
+                COUNT(*) FILTER (WHERE times_assigned = 1 AND status = 'completed') as assigned_once,
+                COUNT(*) FILTER (WHERE times_assigned = 2 AND status = 'completed') as assigned_twice,
+                COUNT(*) FILTER (WHERE times_assigned >= 3) as maxed_out
              FROM leads 
              WHERE campaign_id = $1`,
             [campaignId]
         );
 
-        // Get user assignment stats
-        const userStats = await pool.query(
-            `SELECT 
-                COUNT(DISTINCT user_id) as total_users,
-                COUNT(*) as total_assignments,
-                COUNT(*) FILTER (WHERE status = 'approved') as completed_assignments
-             FROM user_lead_assignments
-             WHERE campaign_id = $1`,
-            [campaignId]
-        );
-
-        res.json({
-            leads: result.rows[0],
-            users: userStats.rows[0]
-        });
+        res.json({ leads: result.rows[0] });
     } catch (error) {
         console.error('Error fetching detailed stats:', error);
         res.status(500).json({ error: 'Failed to fetch stats' });
@@ -5528,6 +5512,28 @@ router.put('/admin/campaign-settings/:key', authenticateAdmin, async (req, res) 
         res.status(500).json({ error: 'Failed to update setting' });
     }
 });
+
+// ==================== ADD THIS TO routes.js AFTER LINE 5514 ====================
+
+// Get all campaign settings
+router.get('/admin/campaign-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const result = await pool.query(
+            'SELECT setting_key, setting_value FROM campaign_settings ORDER BY setting_key'
+        );
+        
+        const settings = {};
+        result.rows.forEach(row => {
+            settings[row.setting_key] = row.setting_value;
+        });
+        
+        res.json({ settings });
+    } catch (error) {
+        console.error('Error fetching campaign settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+})
 
 // Get campaign statistics
 router.get('/admin/campaigns/:id/stats', authenticateAdmin, async (req, res) => {
