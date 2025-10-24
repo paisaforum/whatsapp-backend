@@ -3900,8 +3900,8 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.body;
 
-        // Get total shares (recipients) count
-        const totalShares = await pool.query(
+        // ✅ UPDATED: Get total shares INCLUDING global tasks
+        const personalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
@@ -3909,7 +3909,18 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        const shareCount = parseInt(totalShares.rows[0].total) || 0;
+        // ✅ NEW: Get global task completions
+        const globalTasks = await pool.query(
+            `SELECT COUNT(*) as total
+             FROM user_lead_assignments
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        // ✅ UPDATED: Combine both counts
+        const personalCount = parseInt(personalShares.rows[0].total) || 0;
+        const globalCount = parseInt(globalTasks.rows[0].total) || 0;
+        const shareCount = personalCount + globalCount;
 
         // Get milestone settings
         const milestones = await pool.query(
@@ -3956,7 +3967,11 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         res.json({
             message: awarded.length > 0 ? 'Milestones achieved!' : 'No new milestones',
             awarded,
-            currentShares: shareCount
+            currentShares: shareCount,
+            breakdown: {
+                personal: personalCount,
+                globalTasks: globalCount
+            }
         });
     } catch (error) {
         console.error('Error checking milestones:', error);
@@ -3964,6 +3979,8 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
     }
 });
 
+
+// Get user milestones
 // Get user milestones
 router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
     try {
@@ -3975,8 +3992,8 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // Get current share count
-        const totalShares = await pool.query(
+        // ✅ UPDATED: Get personal share count
+        const personalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
@@ -3984,16 +4001,32 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
+        // ✅ NEW: Get global task count
+        const globalTasks = await pool.query(
+            `SELECT COUNT(*) as total
+             FROM user_lead_assignments
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        // ✅ UPDATED: Combine counts
+        const personalCount = parseInt(personalShares.rows[0].total) || 0;
+        const globalCount = parseInt(globalTasks.rows[0].total) || 0;
+        const totalShares = personalCount + globalCount;
+
         res.json({
             milestones: milestones.rows,
-            currentShares: parseInt(totalShares.rows[0].total) || 0
+            currentShares: totalShares,
+            breakdown: {
+                personal: personalCount,
+                globalTasks: globalCount
+            }
         });
     } catch (error) {
         console.error('Error fetching milestones:', error);
         res.status(500).json({ error: 'Failed to fetch milestones' });
     }
 });
-
 // ==================== ACTIVITIES ROUTES ====================
 
 // Get all active activities (PUBLIC)
@@ -5611,12 +5644,12 @@ router.get('/admin/campaign-settings', authenticateAdmin, async (req, res) => {
         const result = await pool.query(
             'SELECT setting_key, setting_value FROM campaign_settings ORDER BY setting_key'
         );
-        
+
         const settings = {};
         result.rows.forEach(row => {
             settings[row.setting_key] = row.setting_value;
         });
-        
+
         res.json({ settings });
     } catch (error) {
         console.error('Error fetching campaign settings:', error);
