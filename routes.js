@@ -5327,6 +5327,95 @@ router.post('/admin/campaigns/:campaignId/master-clear', authenticateAdmin, asyn
     }
 });
 
+// 3. NEW: HARD RESET - Nuclear option, deletes EVERYTHING
+router.post('/admin/campaigns/:campaignId/hard-reset', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { campaignId } = req.params;
+        const { confirmCode } = req.body;
+
+        // Security: Require confirmation code
+        if (confirmCode !== 'DELETE_EVERYTHING') {
+            return res.status(400).json({ error: 'Invalid confirmation code' });
+        }
+
+        // Get stats before deletion
+        const beforeStats = await pool.query(
+            `SELECT 
+                COUNT(*) as total_leads,
+                COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                COUNT(*) FILTER (WHERE status = 'pending') as pending,
+                COUNT(*) FILTER (WHERE status = 'available') as available
+             FROM leads 
+             WHERE campaign_id = $1`,
+            [campaignId]
+        );
+
+        const assignmentCount = await pool.query(
+            'SELECT COUNT(*) as count FROM user_lead_assignments WHERE campaign_id = $1',
+            [campaignId]
+        );
+
+        const submissionCount = await pool.query(
+            'SELECT COUNT(*) as count FROM lead_submissions WHERE campaign_id = $1',
+            [campaignId]
+        );
+
+        // 1. Delete all lead submissions
+        await pool.query(
+            'DELETE FROM lead_submissions WHERE campaign_id = $1',
+            [campaignId]
+        );
+
+        // 2. Delete all user assignments
+        await pool.query(
+            'DELETE FROM user_lead_assignments WHERE campaign_id = $1',
+            [campaignId]
+        );
+
+        // 3. Delete all leads
+        await pool.query(
+            'DELETE FROM leads WHERE campaign_id = $1',
+            [campaignId]
+        );
+
+        // 4. Keep campaign itself (id=1) but reset counters if they exist
+        await pool.query(
+            `UPDATE campaigns 
+             SET updated_at = NOW()
+             WHERE id = $1`,
+            [campaignId]
+        );
+
+        // Log admin activity
+        await logAdminActivity(
+            pool,
+            req.admin.adminId,
+            'hard_reset_campaign',
+            `HARD RESET: Deleted ${beforeStats.rows[0].total_leads} leads, ${assignmentCount.rows[0].count} assignments, ${submissionCount.rows[0].count} submissions for campaign ${campaignId}`
+        );
+
+        res.json({
+            message: 'Hard reset completed successfully - All data deleted',
+            stats: {
+                leadsDeleted: parseInt(beforeStats.rows[0].total_leads),
+                assignmentsDeleted: parseInt(assignmentCount.rows[0].count),
+                submissionsDeleted: parseInt(submissionCount.rows[0].count),
+                breakdown: {
+                    completed: parseInt(beforeStats.rows[0].completed),
+                    pending: parseInt(beforeStats.rows[0].pending),
+                    available: parseInt(beforeStats.rows[0].available)
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error in hard reset:', error);
+        res.status(500).json({ error: 'Failed to perform hard reset' });
+    }
+});
+
+
+
 // Get detailed lead statistics
 router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmin, async (req, res) => {
     try {
