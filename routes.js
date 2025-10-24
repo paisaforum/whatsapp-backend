@@ -4,6 +4,18 @@ const fs = require('fs');
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
+const logActivity = async (pool, userId, activityType, title, description, points, metadata = {}) => {
+    try {
+        await pool.query(
+            `INSERT INTO activity_log (user_id, activity_type, title, description, points, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [userId, activityType, title, description, points, JSON.stringify(metadata)]
+        );
+        console.log(`📝 Activity logged: ${activityType} for user ${userId}`);
+    } catch (error) {
+        console.error('❌ Failed to log activity:', error);
+    }
+};
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
@@ -149,20 +161,6 @@ const uploadSubmission = multer({
 
 // Backwards compatibility
 const upload = uploadSubmission;
-
-
-// ==================== ACTIVITY LOG HELPER ====================
-const logActivity = async (pool, userId, activityType, title, description, points, metadata = {}) => {
-    try {
-        await pool.query(
-            `INSERT INTO activity_log (user_id, activity_type, title, description, points, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [userId, activityType, title, description, points, JSON.stringify(metadata)]
-        );
-    } catch (error) {
-        console.error('Failed to log activity:', error);
-    }
-};
 
 // Helper function to hash phone numbers
 function hashPhoneNumber(phoneNumber) {
@@ -4938,6 +4936,21 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
             await pool.query(
                 'UPDATE users SET points = points + $1 WHERE id = $2',
                 [pointsPerLead, userId]
+            );
+            // ✅ ADD THIS: Log the activity
+            await logActivity(
+                pool,
+                userId,
+                'global_task',
+                'Global Task Completed ✅',
+                `Earned ${pointsPerLead} points for completing global task`,
+                pointsPerLead,
+                { assignmentId: assignmentId, leadId: assignment.lead_id }
+            );
+
+            await pool.query(
+                'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
+                [pointsPerLead, assignmentId]
             );
             await pool.query(
                 'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
