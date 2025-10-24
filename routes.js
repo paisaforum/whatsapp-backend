@@ -77,6 +77,7 @@ const logAdminActivity = async (pool, adminId, action, details) => {
 };
 
 
+
 // File upload configuration - Organized by type
 const uploadsDir = './uploads';
 const bannersDir = './uploads/banners';
@@ -150,6 +151,18 @@ const uploadSubmission = multer({
 const upload = uploadSubmission;
 
 
+// ==================== ACTIVITY LOG HELPER ====================
+const logActivity = async (pool, userId, activityType, title, description, points, metadata = {}) => {
+    try {
+        await pool.query(
+            `INSERT INTO activity_log (user_id, activity_type, title, description, points, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [userId, activityType, title, description, points, JSON.stringify(metadata)]
+        );
+    } catch (error) {
+        console.error('Failed to log activity:', error);
+    }
+};
 
 // Helper function to hash phone numbers
 function hashPhoneNumber(phoneNumber) {
@@ -5684,5 +5697,61 @@ router.get('/admin/campaigns/:id/stats', authenticateAdmin, async (req, res) => 
 });
 
 // ==================== END GLOBAL TASK ROUTES ====================
+
+
+// ==================== ACTIVITY LOG ROUTES ====================
+
+// Get user activity history
+router.get('/activity-log/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { limit = 10, offset = 0 } = req.query;
+
+        const activities = await pool.query(
+            `SELECT * FROM activity_log 
+             WHERE user_id = $1 
+             ORDER BY created_at DESC 
+             LIMIT $2 OFFSET $3`,
+            [userId, parseInt(limit), parseInt(offset)]
+        );
+
+        const total = await pool.query(
+            'SELECT COUNT(*) as count FROM activity_log WHERE user_id = $1',
+            [userId]
+        );
+
+        res.json({
+            activities: activities.rows,
+            total: parseInt(total.rows[0].count),
+            hasMore: parseInt(offset) + activities.rows.length < parseInt(total.rows[0].count)
+        });
+    } catch (error) {
+        console.error('Error fetching activity log:', error);
+        res.status(500).json({ error: 'Failed to fetch activity log' });
+    }
+});
+
+// Clean up old activities (older than specified days)
+router.post('/cleanup-activities', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { days = 30 } = req.body;
+
+        const result = await pool.query(
+            `DELETE FROM activity_log 
+             WHERE created_at < NOW() - INTERVAL '${parseInt(days)} days'
+             RETURNING id`
+        );
+
+        res.json({
+            message: 'Old activities cleaned up',
+            deleted: result.rowCount
+        });
+    } catch (error) {
+        console.error('Error cleaning up activities:', error);
+        res.status(500).json({ error: 'Failed to cleanup activities' });
+    }
+});
 
 module.exports = router;
