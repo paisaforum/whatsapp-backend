@@ -672,7 +672,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
             const milestonesObj = {};
             milestones.rows.forEach(m => {
-                const shares = m.setting_key.replace('milestone_', '').replace('_shares', '');
+                const shares = m.setting_key.replace('milestone_', ''); // ✅ Just remove 'milestone_'
                 milestonesObj[shares] = parseInt(m.setting_value);
             });
 
