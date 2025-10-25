@@ -4937,6 +4937,7 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                 'UPDATE users SET points = points + $1 WHERE id = $2',
                 [pointsPerLead, userId]
             );
+
             // ✅ ADD THIS: Log the activity
             await logActivity(
                 pool,
@@ -4948,10 +4949,6 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                 { assignmentId: assignmentId, leadId: assignment.lead_id }
             );
 
-            await pool.query(
-                'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
-                [pointsPerLead, assignmentId]
-            );
             await pool.query(
                 'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
                 [pointsPerLead, assignmentId]
