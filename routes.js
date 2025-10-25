@@ -6022,36 +6022,83 @@ router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
 router.post('/admin/cleanup-activities', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { daysOld } = req.body;
+        const { daysOld, deleteAll } = req.body;
 
-        // Default to 30 days if not specified
-        const days = parseInt(daysOld) || 30;
+        let result;
+        let deletedCount;
 
-        // Delete old activities
-        const result = await pool.query(
-            `DELETE FROM activity_log 
-             WHERE created_at < NOW() - INTERVAL '${days} days'`
-        );
-
-        // Log admin action
-        await pool.query(
-            `INSERT INTO admin_activity_log (admin_id, action, details) 
-             VALUES ($1, $2, $3)`,
-            [
-                req.admin.adminId,
-                'cleanup_activities',
-                `Cleaned up ${result.rowCount} activities older than ${days} days`
-            ]
-        );
+        if (deleteAll) {
+            // Delete ALL activities
+            result = await pool.query('DELETE FROM activity_log');
+            deletedCount = result.rowCount;
+        } else {
+            // Delete activities older than specified days
+            const days = parseInt(daysOld) || 30;
+            result = await pool.query(
+                `DELETE FROM activity_log 
+                 WHERE created_at < NOW() - INTERVAL '${days} days'`
+            );
+            deletedCount = result.rowCount;
+        }
 
         res.json({
             success: true,
-            deletedCount: result.rowCount,
-            message: `Successfully deleted ${result.rowCount} activities older than ${days} days`
+            deletedCount: deletedCount,
+            message: `Successfully deleted ${deletedCount} activities`
         });
     } catch (error) {
         console.error('Error cleaning up activities:', error);
         res.status(500).json({ error: 'Failed to cleanup activities' });
+    }
+});
+
+// Get activity cleanup settings
+router.get('/admin/activity-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get retention days setting
+        const setting = await pool.query(
+            "SELECT setting_value FROM settings WHERE setting_key = 'activity_log_retention_days'"
+        );
+
+        const retentionDays = setting.rows.length > 0
+            ? parseInt(setting.rows[0].setting_value)
+            : 30;
+
+        res.json({ retentionDays });
+    } catch (error) {
+        console.error('Error fetching activity settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// Update activity cleanup settings
+router.post('/admin/activity-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { retentionDays } = req.body;
+
+        if (!retentionDays || retentionDays < 1) {
+            return res.status(400).json({ error: 'Invalid retention days' });
+        }
+
+        // Upsert the setting
+        await pool.query(
+            `INSERT INTO settings (setting_key, setting_value, description) 
+             VALUES ('activity_log_retention_days', $1, 'Number of days to keep activity logs before auto-deletion')
+             ON CONFLICT (setting_key) 
+             DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+            [retentionDays.toString()]
+        );
+
+        res.json({
+            success: true,
+            message: `Activity log retention set to ${retentionDays} days`
+        });
+    } catch (error) {
+        console.error('Error updating activity settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
     }
 });
 
