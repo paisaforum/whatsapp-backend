@@ -4041,7 +4041,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Award prize
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
-        await logSpinActivity(pool, userId, prize, usedFreeSpin ? 'free' : 'bonus');
+        await logSpinActivity(pool, userId, prize, spinType);
         console.log('✅ Points added:', prize);
 
         // ✅ ADD THIS: Log spin activity
@@ -4334,7 +4334,7 @@ router.post('/participate-activity', authenticateUser, async (req, res) => {
             'UPDATE users SET points = points + $1 WHERE id = $2',
             [activity.rows[0].points_reward, userId]
         );
-        
+
         // ✅ ADD THIS: Log generic activity
         await logActivity(
             pool,
@@ -5774,7 +5774,7 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                 );
 
                 // ✅ ADD THIS: Log admin approval
-                await logAdminApprovalActivity(pool, submission.user_id, points, submissionId, req.admin?.adminId || null);
+                await logAdminApprovalActivity(pool, submission.user_id, points, submission.id, req.admin?.adminId || null);
 
                 await pool.query(
                     'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
