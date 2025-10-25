@@ -1,6 +1,12 @@
 const express = require('express');
 const cors = require('cors');
+require('dotenv').config();
+const { Pool } = require('pg');
 
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// CORS Configuration - Allow all origins
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (mobile apps, Postman, etc.)
@@ -8,33 +14,6 @@ app.use(cors({
         
         // Allow all origins (or check against database settings)
         callback(null, true);
-    },
-    credentials: true
-}));
-require('dotenv').config();
-const { Pool } = require('pg');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// CORS Configuration
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:4173',
-    'http://vggamee.com',
-    'https://vggamee.com',
-    'http://www.vggamee.com',
-    'https://www.vggamee.com',
-    'http://72.60.78.251'
-];
-
-app.use(cors({
-    origin: function(origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
