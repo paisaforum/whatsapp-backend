@@ -314,6 +314,38 @@ function hashPhoneNumber(phoneNumber) {
     return crypto.createHash('sha256').update(phoneNumber).digest('hex');
 }
 
+
+
+// Public config endpoint (no auth required)
+router.get('/config', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get domain settings
+        const settings = await pool.query(
+            `SELECT setting_key, setting_value 
+             FROM settings 
+             WHERE setting_key IN ('primary_domain', 'api_url')`
+        );
+
+        const config = {};
+        settings.rows.forEach(row => {
+            config[row.setting_key] = row.setting_value;
+        });
+
+        // Default values if not set
+        config.api_url = config.api_url || `http://${req.get('host')}/api`;
+        config.primary_domain = config.primary_domain || req.get('host');
+
+        res.json(config);
+    } catch (error) {
+        console.error('Error fetching config:', error);
+        res.status(500).json({ error: 'Failed to fetch config' });
+    }
+});
+
+
+
 router.post('/register', async (req, res) => {
     const { whatsappNumber, password, referredByCode } = req.body;
 
@@ -6098,6 +6130,71 @@ router.post('/admin/activity-settings', authenticateAdmin, async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating activity settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+
+// Get domain settings (Admin only)
+router.get('/admin/domain-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const settings = await pool.query(
+            `SELECT setting_key, setting_value, description 
+             FROM settings 
+             WHERE setting_key IN ('primary_domain', 'api_url')`
+        );
+
+        const config = {};
+        settings.rows.forEach(row => {
+            config[row.setting_key] = row.setting_value;
+        });
+
+        res.json(config);
+    } catch (error) {
+        console.error('Error fetching domain settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// Update domain settings (Super Admin only)
+router.post('/admin/domain-settings', authenticateAdmin, async (req, res) => {
+    try {
+        // Check if super admin
+        if (req.admin.role !== 'super_admin') {
+            return res.status(403).json({ error: 'Only super admin can change domain settings' });
+        }
+
+        const pool = req.app.get('db');
+        const { primary_domain, api_url } = req.body;
+
+        if (primary_domain) {
+            await pool.query(
+                `INSERT INTO settings (setting_key, setting_value, description) 
+                 VALUES ('primary_domain', $1, 'Primary domain name')
+                 ON CONFLICT (setting_key) 
+                 DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+                [primary_domain]
+            );
+        }
+
+        if (api_url) {
+            await pool.query(
+                `INSERT INTO settings (setting_key, setting_value, description) 
+                 VALUES ('api_url', $1, 'API base URL')
+                 ON CONFLICT (setting_key) 
+                 DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+                [api_url]
+            );
+        }
+
+        res.json({
+            success: true,
+            message: 'Domain settings updated successfully'
+        });
+    } catch (error) {
+        console.error('Error updating domain settings:', error);
         res.status(500).json({ error: 'Failed to update settings' });
     }
 });
