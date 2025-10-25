@@ -5973,4 +5973,86 @@ router.post('/cleanup-activities', authenticateUser, async (req, res) => {
     }
 });
 
+
+// ==================== ACTIVITY LOG ADMIN ENDPOINTS ====================
+
+// Get activity statistics
+router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Total count
+        const totalResult = await pool.query('SELECT COUNT(*) as total FROM activity_log');
+        const total = parseInt(totalResult.rows[0].total);
+
+        // Oldest and newest
+        const rangeResult = await pool.query(
+            'SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM activity_log'
+        );
+
+        // Count by type
+        const byTypeResult = await pool.query(
+            `SELECT activity_type, COUNT(*) as count 
+             FROM activity_log 
+             GROUP BY activity_type 
+             ORDER BY count DESC`
+        );
+
+        // Count activities older than 30 days
+        const oldActivitiesResult = await pool.query(
+            `SELECT COUNT(*) as count 
+             FROM activity_log 
+             WHERE created_at < NOW() - INTERVAL '30 days'`
+        );
+
+        res.json({
+            total,
+            oldest: rangeResult.rows[0].oldest,
+            newest: rangeResult.rows[0].newest,
+            byType: byTypeResult.rows,
+            oldActivitiesCount: parseInt(oldActivitiesResult.rows[0].count)
+        });
+    } catch (error) {
+        console.error('Error fetching activity stats:', error);
+        res.status(500).json({ error: 'Failed to fetch activity statistics' });
+    }
+});
+
+// Manual cleanup endpoint
+router.post('/admin/cleanup-activities', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { daysOld } = req.body;
+        
+        // Default to 30 days if not specified
+        const days = parseInt(daysOld) || 30;
+
+        // Delete old activities
+        const result = await pool.query(
+            `DELETE FROM activity_log 
+             WHERE created_at < NOW() - INTERVAL '${days} days'`
+        );
+
+        // Log admin action
+        await pool.query(
+            `INSERT INTO admin_activity_log (admin_id, action, details) 
+             VALUES ($1, $2, $3)`,
+            [
+                req.admin.adminId,
+                'cleanup_activities',
+                `Cleaned up ${result.rowCount} activities older than ${days} days`
+            ]
+        );
+
+        res.json({
+            success: true,
+            deletedCount: result.rowCount,
+            message: `Successfully deleted ${result.rowCount} activities older than ${days} days`
+        });
+    } catch (error) {
+        console.error('Error cleaning up activities:', error);
+        res.status(500).json({ error: 'Failed to cleanup activities' });
+    }
+});
+
 module.exports = router;
