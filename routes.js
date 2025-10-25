@@ -4,6 +4,37 @@ const fs = require('fs');
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
+
+// Public config endpoint (no auth required)
+router.get('/config', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get domain settings
+        const settings = await pool.query(
+            `SELECT setting_key, setting_value 
+             FROM settings 
+             WHERE setting_key IN ('primary_domain', 'api_url')`
+        );
+
+        const config = {};
+        settings.rows.forEach(row => {
+            config[row.setting_key] = row.setting_value;
+        });
+
+        // Default values if not set
+        config.api_url = config.api_url || `http://${req.get('host')}/api`;
+        config.primary_domain = config.primary_domain || req.get('host');
+
+        res.json(config);
+    } catch (error) {
+        console.error('Error fetching config:', error);
+        res.status(500).json({ error: 'Failed to fetch config' });
+    }
+});
+
+
+
 const logActivity = async (pool, userId, activityType, title, description, points, metadata = {}) => {
     try {
         await pool.query(
@@ -313,36 +344,6 @@ const upload = uploadSubmission;
 function hashPhoneNumber(phoneNumber) {
     return crypto.createHash('sha256').update(phoneNumber).digest('hex');
 }
-
-
-
-// Public config endpoint (no auth required)
-router.get('/config', async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-
-        // Get domain settings
-        const settings = await pool.query(
-            `SELECT setting_key, setting_value 
-             FROM settings 
-             WHERE setting_key IN ('primary_domain', 'api_url')`
-        );
-
-        const config = {};
-        settings.rows.forEach(row => {
-            config[row.setting_key] = row.setting_value;
-        });
-
-        // Default values if not set
-        config.api_url = config.api_url || `http://${req.get('host')}/api`;
-        config.primary_domain = config.primary_domain || req.get('host');
-
-        res.json(config);
-    } catch (error) {
-        console.error('Error fetching config:', error);
-        res.status(500).json({ error: 'Failed to fetch config' });
-    }
-});
 
 
 
