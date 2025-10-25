@@ -4938,17 +4938,6 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                 [pointsPerLead, userId]
             );
 
-            // ✅ ADD THIS: Log the activity
-            await logActivity(
-                pool,
-                userId,
-                'global_task',
-                'Global Task Completed ✅',
-                `Earned ${pointsPerLead} points for completing global task`,
-                pointsPerLead,
-                { assignmentId: assignmentId, leadId: assignment.lead_id }
-            );
-
             await pool.query(
                 'UPDATE user_lead_assignments SET points_awarded = $1, completed_at = NOW() WHERE id = $2',
                 [pointsPerLead, assignmentId]
@@ -4980,6 +4969,17 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
         } else {
             console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
         }
+
+        // ✅ MOVE THIS HERE (outside if block, but inside the route, before res.json)
+        await logActivity(
+            pool,
+            userId,
+            'global_task',
+            'Global Task Completed ✅',
+            `Completed global task - ${pointsPerLead} points ${instantAward ? 'earned' : 'pending approval'}`,
+            pointsPerLead,
+            { assignmentId: assignmentId, leadId: assignment.lead_id, instantAward: instantAward }
+        );
 
         res.json({
             message: 'Proof uploaded successfully',
