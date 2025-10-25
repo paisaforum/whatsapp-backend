@@ -23,7 +23,7 @@ const logSpinActivity = async (pool, userId, prize, spinType) => {
         userId,
         'spin',
         'Spin Wheel',
-        `Earned points on ${spinType}`,
+        `Earned points on ${spinType} Spin`,
         prize,
         { prize, spinType }
     );
@@ -6023,7 +6023,7 @@ router.post('/admin/cleanup-activities', authenticateAdmin, async (req, res) => 
     try {
         const pool = req.app.get('db');
         const { daysOld } = req.body;
-        
+
         // Default to 30 days if not specified
         const days = parseInt(daysOld) || 30;
 
