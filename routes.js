@@ -16,6 +16,153 @@ const logActivity = async (pool, userId, activityType, title, description, point
         console.error('❌ Failed to log activity:', error);
     }
 };
+
+const logSpinActivity = async (pool, userId, prize, spinType) => {
+    await logActivity(
+        pool,
+        userId,
+        'spin',
+        'Spin Wheel Win',
+        `Used ${spinType} spin and won ${prize} points`,
+        prize,
+        { prize, spinType }
+    );
+};
+
+const logGlobalTaskActivity = async (pool, userId, leadPhone, points, leadId, instantAward) => {
+    const status = instantAward ? 'earned' : 'pending approval';
+    const maskedPhone = leadPhone ? `+91${leadPhone.slice(-10)}` : 'Hidden';
+
+    await logActivity(
+        pool,
+        userId,
+        'global_task',
+        'Global Task Completed',
+        `Sent offer to ${maskedPhone} - ${points} points ${status}`,
+        points,
+        { leadPhone, leadId, instantAward }
+    );
+};
+
+const logPersonalShareActivity = async (pool, userId, recipientCount, points, shareType = 'offer') => {
+    const contactText = recipientCount === 1 ? 'contact' : 'contacts';
+    const pointText = points === 1 ? 'point' : 'points';
+
+    await logActivity(
+        pool,
+        userId,
+        'personal_share',
+        'Personal Share Sent',
+        `Shared ${shareType} with ${recipientCount} ${contactText} - Earned ${points} ${pointText}`,
+        points,
+        { recipientCount, shareType }
+    );
+};
+
+const logMilestoneActivity = async (pool, userId, shares, bonus, totalShares, nextMilestone = null) => {
+    const nextInfo = nextMilestone ? ` | Next: ${nextMilestone} shares` : '';
+
+    await logActivity(
+        pool,
+        userId,
+        'milestone',
+        `${shares} Shares Milestone`,
+        `Reached ${shares} total shares and unlocked ${bonus} bonus points${nextInfo}`,
+        bonus,
+        { milestone: shares, totalShares, nextMilestone }
+    );
+};
+
+const logStreakActivity = async (pool, userId, day, bonus, nextDayBonus = null) => {
+    const dayText = day === 1 ? 'check-in' : 'consecutive check-ins';
+    const nextInfo = nextDayBonus ? ` | Day ${day + 1}: ${nextDayBonus} points` : '';
+
+    await logActivity(
+        pool,
+        userId,
+        'streak',
+        `Day ${day} Streak Bonus`,
+        `Completed ${day} ${dayText} - Earned ${bonus} points${nextInfo}`,
+        bonus,
+        { day, consecutive: day > 1, nextDayBonus }
+    );
+};
+
+const logReferralActivity = async (pool, referrerId, referredPhone, bonus, referredUserId) => {
+    const maskedPhone = referredPhone ? `+91${referredPhone.slice(-10)}` : 'Friend';
+
+    await logActivity(
+        pool,
+        referrerId,
+        'referral',
+        'Referral Bonus Earned',
+        `${maskedPhone} joined using your referral code - Earned ${bonus} points`,
+        bonus,
+        { referredPhone, referredUserId }
+    );
+};
+
+const logWelcomeBonusActivity = async (pool, newUserId, referrerPhone, bonus, referrerId) => {
+    const maskedPhone = referrerPhone ? `+91${referrerPhone.slice(-10)}` : 'Referrer';
+
+    await logActivity(
+        pool,
+        newUserId,
+        'referral',
+        'Welcome Bonus Received',
+        `Joined via ${maskedPhone}'s referral code - Earned ${bonus} points`,
+        bonus,
+        { referredBy: referrerId, referrerPhone }
+    );
+};
+
+const logCommissionActivity = async (pool, referrerId, referredPhone, commission, percentage, fromAmount, referredUserId) => {
+    const maskedPhone = referredPhone ? `+91${referredPhone.slice(-10)}` : 'Referral';
+
+    await logActivity(
+        pool,
+        referrerId,
+        'commission',
+        'Commission Earned',
+        `${percentage}% commission from ${maskedPhone} (earned ${fromAmount} pts) - Got ${commission} points`,
+        commission,
+        {
+            fromPhone: referredPhone,
+            fromUserId: referredUserId,
+            percentage,
+            fromAmount
+        }
+    );
+};
+
+const logBonusSpinActivity = async (pool, userId, spinsAwarded, totalShares, sharesNeeded) => {
+    const spinText = spinsAwarded === 1 ? 'spin' : 'spins';
+
+    await logActivity(
+        pool,
+        userId,
+        'bonus_spin',
+        'Bonus Spin Awarded',
+        `Earned ${spinsAwarded} bonus ${spinText} for reaching ${totalShares} shares (${sharesNeeded} shares per spin)`,
+        0,
+        { spinsAwarded, totalShares, sharesNeeded }
+    );
+};
+
+const logAdminApprovalActivity = async (pool, userId, points, submissionId, adminId) => {
+    await logActivity(
+        pool,
+        userId,
+        'admin_approval',
+        'Task Approved',
+        `Admin approved your submission - Earned ${points} points`,
+        points,
+        { submissionId, approvedBy: adminId }
+    );
+};
+
+
+
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateUser, authenticateAdmin, JWT_SECRET } = require('./middleware/auth');
@@ -234,6 +381,14 @@ router.post('/register', async (req, res) => {
                     'UPDATE users SET points = points + $1 WHERE id IN ($2, $3)',
                     [signupBonus, referrerId, userId]
                 );
+
+                // ✅ ADD THIS: Log for both users
+                const referrerUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [referrerId]);
+                const newUserPhone = whatsappNumber; // New user's phone from registration
+
+                await logReferralActivity(pool, referrerId, newUserPhone, signupBonus, userId);
+                await logWelcomeBonusActivity(pool, userId, referrerUser.rows[0].whatsapp_number, signupBonus, referrerId);
+
             }
         }
 
@@ -561,6 +716,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             [numbers.length, userId]
         );
 
+        // ✅ ADD THIS: Log personal share
+        await logPersonalShareActivity(pool, userId, numbers.length, numbers.length, 'offer');
+
         // 1. UPDATE STREAK
         try {
             const today = new Date().toISOString().split('T')[0];
@@ -584,6 +742,12 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                 if (day1Bonus > 0) {
                     streakBonus = day1Bonus;
                     await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
+
+                    // ✅ ADD THIS: Log streak activity
+                    const day2Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day2_bonus']);
+                    const day2Bonus = parseInt(day2Settings.rows[0]?.setting_value) || 0;
+                    await logStreakActivity(pool, userId, 1, day1Bonus, day2Bonus);
+
 
                     await pool.query(
                         'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
@@ -647,6 +811,13 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                     if (streakBonus > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
 
+                        // ✅ ADD THIS: Log streak activity
+                        // Get next day bonus
+                        const nextDayKey = `streak_day${newStreak + 1}_bonus`;
+                        const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+                        const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
+                        await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+
                         await pool.query(
                             'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
                             [streakBonus, submissionId]
@@ -703,6 +874,17 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                         );
 
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+
+                        // ✅ ADD THIS: Log milestone activity
+                        // Get total shares and next milestone
+                        const userShares = await pool.query('SELECT COUNT(*) as total FROM submissions WHERE user_id = $1', [userId]);
+                        const totalShares = parseInt(userShares.rows[0].total);
+
+                        // Find next milestone
+                        const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
+                        const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
+
+                        await logMilestoneActivity(pool, userId, milestoneShares, bonus, totalShares, nextMilestone);
                     }
                 }
             }
@@ -731,6 +913,10 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
                     if (commission > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+
+                        // ✅ ADD THIS HERE
+                        const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
+                        await logCommissionActivity(pool, referrer.rows[0].id, referredUser.rows[0].whatsapp_number, commission, commissionPercent, numbers.length, userId);
 
                         await pool.query(
                             'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
@@ -3544,6 +3730,12 @@ router.post('/update-streak', authenticateUser, async (req, res) => {
                 'UPDATE users SET points = points + $1 WHERE id = $2',
                 [bonus, userId]
             );
+            // ✅ ADD THIS: Log streak activity
+            const nextDayKey = `streak_day${newStreak + 1}_bonus`;
+            const nextSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+            const nextBonus = parseInt(nextSettings.rows[0]?.setting_value) || 0;
+            await logStreakActivity(pool, userId, newStreak, bonus, nextBonus);
+
         }
 
         res.json({
@@ -3693,6 +3885,10 @@ router.post('/referral-commission', authenticateUser, async (req, res) => {
         if (commission > 0) {
             // Award commission
             await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+
+            // ✅ ADD THIS: Log commission activity
+            const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
+            await logCommissionActivity(pool, referrer.rows[0].id, referredUser.rows[0].whatsapp_number, commission, commissionPercent, pointsEarned, userId);
 
             // Update referral record
             await pool.query(
@@ -3845,7 +4041,11 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Award prize
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
+        await logSpinActivity(pool, userId, prize, usedFreeSpin ? 'free' : 'bonus');
         console.log('✅ Points added:', prize);
+
+        // ✅ ADD THIS: Log spin activity
+        await logSpinActivity(pool, userId, prize, spinType);
 
         // Update spin counts
         if (spinType === 'free') {
@@ -3969,6 +4169,12 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
                         'UPDATE users SET points = points + $1 WHERE id = $2',
                         [bonus, userId]
                     );
+
+                    // ✅ ADD THIS: Log milestone activity
+                    const totalShares = await pool.query('SELECT COUNT(*) as total FROM submissions WHERE user_id = $1', [userId]);
+                    const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
+                    const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
+                    await logMilestoneActivity(pool, userId, milestoneShares, bonus, parseInt(totalShares.rows[0].total), nextMilestone);
 
                     awarded.push({ milestone: milestoneShares, bonus });
                 }
@@ -4127,6 +4333,17 @@ router.post('/participate-activity', authenticateUser, async (req, res) => {
         await pool.query(
             'UPDATE users SET points = points + $1 WHERE id = $2',
             [activity.rows[0].points_reward, userId]
+        );
+        
+        // ✅ ADD THIS: Log generic activity
+        await logActivity(
+            pool,
+            userId,
+            'task_completed',
+            'Task Completed',
+            `Completed task and earned ${activity.rows[0].points_reward} points`,
+            activity.rows[0].points_reward,
+            { activityId: activityId }
         );
 
         res.json({
@@ -4970,19 +5187,7 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
             console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
         }
 
-        console.log(`🔍 DEBUG: About to log activity for userId=${userId}, points=${pointsPerLead}, instant=${instantAward}`);
-
-        // ✅ MOVE THIS HERE (outside if block, but inside the route, before res.json)
-        await logActivity(
-            pool,
-            userId,
-            'global_task',
-            'Global Task Completed ✅',
-            `Completed global task - ${pointsPerLead} points ${instantAward ? 'earned' : 'pending approval'}`,
-            pointsPerLead,
-            { assignmentId: assignmentId, leadId: assignment.lead_id, instantAward: instantAward }
-        );
-        console.log(`✅ DEBUG: Activity logged successfully for user ${userId}`);
+        await logGlobalTaskActivity(pool, userId, assignment.lead_phone, pointsPerLead, assignment.lead_id, instantAward);
 
         res.json({
             message: 'Proof uploaded successfully',
@@ -5567,6 +5772,10 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                     'UPDATE users SET points = points + $1 WHERE id = $2',
                     [points, submission.user_id]
                 );
+
+                // ✅ ADD THIS: Log admin approval
+                await logAdminApprovalActivity(pool, submission.user_id, points, submissionId, req.admin?.adminId || null);
+
                 await pool.query(
                     'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
                     [points, submission.assignment_id]
