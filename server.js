@@ -1,5 +1,16 @@
 const express = require('express');
 const cors = require('cors');
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, Postman, etc.)
+        if (!origin) return callback(null, true);
+        
+        // Allow all origins (or check against database settings)
+        callback(null, true);
+    },
+    credentials: true
+}));
 require('dotenv').config();
 const { Pool } = require('pg');
 
