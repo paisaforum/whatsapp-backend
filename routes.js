@@ -5952,7 +5952,7 @@ router.get('/activity-log/:userId', authenticateUser, async (req, res) => {
 });
 
 // Clean up old activities (older than specified days)
-router.post('/cleanup-activities', authenticateUser, async (req, res) => {
+router.post('/cleanup-activities', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { days = 30 } = req.body;
