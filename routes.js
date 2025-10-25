@@ -4970,6 +4970,8 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
             console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
         }
 
+        console.log(`🔍 DEBUG: About to log activity for userId=${userId}, points=${pointsPerLead}, instant=${instantAward}`);
+
         // ✅ MOVE THIS HERE (outside if block, but inside the route, before res.json)
         await logActivity(
             pool,
@@ -4980,6 +4982,7 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
             pointsPerLead,
             { assignmentId: assignmentId, leadId: assignment.lead_id, instantAward: instantAward }
         );
+        console.log(`✅ DEBUG: Activity logged successfully for user ${userId}`);
 
         res.json({
             message: 'Proof uploaded successfully',
