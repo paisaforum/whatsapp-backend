@@ -22,25 +22,25 @@ const logSpinActivity = async (pool, userId, prize, spinType) => {
         pool,
         userId,
         'spin',
-        'Spin Wheel Win',
-        `Used ${spinType} spin and won ${prize} points`,
+        'Spin Wheel',
+        `Earned points on ${spinType}`,
         prize,
         { prize, spinType }
     );
 };
 
-const logGlobalTaskActivity = async (pool, userId, leadPhone, points, leadId, instantAward) => {
+const logGlobalTaskActivity = async (pool, userId, phone_number, points, leadId, instantAward) => {
     const status = instantAward ? 'earned' : 'pending approval';
-    const maskedPhone = leadPhone ? `+91${leadPhone.slice(-10)}` : 'Hidden';
+    const maskedPhone = phone_number ? `+91${phone_number.slice(-10)}` : 'Hidden';
 
     await logActivity(
         pool,
         userId,
         'global_task',
-        'Global Task Completed',
-        `Sent offer to ${maskedPhone} - ${points} points ${status}`,
+        'Global Task',
+        `Sent offer to ${maskedPhone} - points ${status}`,
         points,
-        { leadPhone, leadId, instantAward }
+        { phone_number, leadId, instantAward }
     );
 };
 
@@ -52,8 +52,8 @@ const logPersonalShareActivity = async (pool, userId, recipientCount, points, sh
         pool,
         userId,
         'personal_share',
-        'Personal Share Sent',
-        `Shared ${shareType} with ${recipientCount} ${contactText} - Earned ${points} ${pointText}`,
+        'Personal Share',
+        `Shared ${shareType} with ${recipientCount} ${contactText}`,
         points,
         { recipientCount, shareType }
     );
@@ -67,7 +67,7 @@ const logMilestoneActivity = async (pool, userId, shares, bonus, totalShares, ne
         userId,
         'milestone',
         `${shares} Shares Milestone`,
-        `Reached ${shares} total shares and unlocked ${bonus} bonus points${nextInfo}`,
+        `Reached ${shares} total shares`,
         bonus,
         { milestone: shares, totalShares, nextMilestone }
     );
@@ -95,8 +95,8 @@ const logReferralActivity = async (pool, referrerId, referredPhone, bonus, refer
         pool,
         referrerId,
         'referral',
-        'Referral Bonus Earned',
-        `${maskedPhone} joined using your referral code - Earned ${bonus} points`,
+        'Referral Bonus',
+        `${maskedPhone} joined using your code`,
         bonus,
         { referredPhone, referredUserId }
     );
@@ -109,8 +109,8 @@ const logWelcomeBonusActivity = async (pool, newUserId, referrerPhone, bonus, re
         pool,
         newUserId,
         'referral',
-        'Welcome Bonus Received',
-        `Joined via ${maskedPhone}'s referral code - Earned ${bonus} points`,
+        'Welcome Bonus',
+        `${maskedPhone} referred you`,
         bonus,
         { referredBy: referrerId, referrerPhone }
     );
@@ -123,7 +123,7 @@ const logCommissionActivity = async (pool, referrerId, referredPhone, commission
         pool,
         referrerId,
         'commission',
-        'Commission Earned',
+        'Commission Earned %',
         `${percentage}% commission from ${maskedPhone} (earned ${fromAmount} pts) - Got ${commission} points`,
         commission,
         {
