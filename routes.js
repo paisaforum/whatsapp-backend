@@ -4044,9 +4044,6 @@ router.post('/spin', authenticateUser, async (req, res) => {
         await logSpinActivity(pool, userId, prize, spinType);
         console.log('✅ Points added:', prize);
 
-        // ✅ ADD THIS: Log spin activity
-        await logSpinActivity(pool, userId, prize, spinType);
-
         // Update spin counts
         if (spinType === 'free') {
             console.log('🔄 Decrementing free spins...');
