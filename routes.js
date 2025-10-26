@@ -371,20 +371,33 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Account with this number already exists. Please login.' });
         }
 
+        // Capture IP address
+        const userIp = req.headers['x-forwarded-for']?.split(',')[0] || 
+                       req.headers['x-real-ip'] || 
+                       req.connection?.remoteAddress || 
+                       req.socket?.remoteAddress || 
+                       'unknown';
+
         // Hash password
         const passwordHash = await bcrypt.hash(password, 10);
 
         // Generate unique referral code
         const referralCode = `REF${Math.floor(Math.random() * 1000000).toString().padStart(6, '0')}`;
 
-        // Create new user with referral code
+        // Create new user with referral code and IP
         const newUser = await pool.query(
-            'INSERT INTO users (whatsapp_number, password_hash, referral_code, referred_by_code) VALUES ($1, $2, $3, $4) RETURNING id, whatsapp_number',
-            [whatsappNumber, passwordHash, referralCode, referredByCode || null]
+            'INSERT INTO users (whatsapp_number, password_hash, referral_code, referred_by_code, registration_ip, last_login_ip) VALUES ($1, $2, $3, $4, $5, $5) RETURNING id, whatsapp_number',
+            [whatsappNumber, passwordHash, referralCode, referredByCode || null, userIp]
         );
 
         const userId = newUser.rows[0].id;
         const userWhatsappNumber = newUser.rows[0].whatsapp_number;
+
+        // Log IP history
+        await pool.query(
+            'INSERT INTO user_ip_history (user_id, ip_address, action) VALUES ($1, $2, $3)',
+            [userId, userIp, 'registration']
+        );
 
         // If user was referred, create referral relationship
         if (referredByCode) {
@@ -415,13 +428,12 @@ router.post('/register', async (req, res) => {
                     [signupBonus, referrerId, userId]
                 );
 
-                // ✅ ADD THIS: Log for both users
+                // Log for both users
                 const referrerUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [referrerId]);
-                const newUserPhone = whatsappNumber; // New user's phone from registration
+                const newUserPhone = whatsappNumber;
 
                 await logReferralActivity(pool, referrerId, newUserPhone, signupBonus, userId);
                 await logWelcomeBonusActivity(pool, userId, referrerUser.rows[0].whatsapp_number, signupBonus, referrerId);
-
             }
         }
 
@@ -436,16 +448,14 @@ router.post('/register', async (req, res) => {
             [userId]
         );
 
-        // ✨ AUTO-ASSIGN LEADS TO NEW USER
+        // AUTO-ASSIGN LEADS TO NEW USER
         let leadsAssigned = 0;
         try {
-            // Get initial batch size from settings
             const settingsRes = await pool.query(
                 "SELECT setting_value FROM campaign_settings WHERE setting_key = 'lead_initial_batch'"
             );
             const initialBatch = parseInt(settingsRes.rows[0]?.setting_value) || 200;
 
-            // Get available leads
             const availableLeads = await pool.query(
                 `SELECT l.id, l.phone_number, l.campaign_id, l.times_assigned
                  FROM leads l
@@ -460,17 +470,15 @@ router.post('/register', async (req, res) => {
             );
 
             if (availableLeads.rows.length > 0) {
-                // Create assignments for all leads
                 for (const lead of availableLeads.rows) {
                     await pool.query(
                         `INSERT INTO user_lead_assignments 
                          (user_id, lead_id, campaign_id, status, assigned_at, created_at)
                          VALUES ($1, $2, $3, 'pending', NOW(), NOW())`,
-                        [userId, lead.id, lead.campaign_id]  // ✅ Fixed: userId instead of newUser.id
+                        [userId, lead.id, lead.campaign_id]
                     );
                 }
 
-                // Update leads times_assigned counter
                 const leadIds = availableLeads.rows.map(l => l.id);
                 await pool.query(
                     `UPDATE leads 
@@ -484,12 +492,11 @@ router.post('/register', async (req, res) => {
             }
         } catch (assignError) {
             console.error('⚠️ Error auto-assigning leads:', assignError);
-            // Don't fail registration if lead assignment fails
         }
 
-        // Generate token (moved outside lead assignment try-catch)
+        // Generate token
         const token = jwt.sign(
-            { userId, whatsapp_number: userWhatsappNumber },  // ✅ Fixed: Use correct variables
+            { userId, whatsapp_number: userWhatsappNumber },
             process.env.JWT_SECRET || 'your-secret-key',
             { expiresIn: '30d' }
         );
@@ -508,7 +515,6 @@ router.post('/register', async (req, res) => {
     }
 });
 
-// Login user
 router.post('/login', async (req, res) => {
     const { whatsappNumber, password } = req.body;
 
@@ -536,10 +542,29 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid WhatsApp number or password' });
         }
 
+        // Capture IP address
+        const userIp = req.headers['x-forwarded-for']?.split(',')[0] || 
+                       req.headers['x-real-ip'] || 
+                       req.connection?.remoteAddress || 
+                       req.socket?.remoteAddress || 
+                       'unknown';
+
+        // Update last login IP
+        await pool.query(
+            'UPDATE users SET last_login_ip = $1, last_ip = $1 WHERE id = $2',
+            [userIp, user.rows[0].id]
+        );
+
+        // Log IP history
+        await pool.query(
+            'INSERT INTO user_ip_history (user_id, ip_address, action) VALUES ($1, $2, $3)',
+            [user.rows[0].id, userIp, 'login']
+        );
+
         // Create JWT token
         const token = jwt.sign({
             userId: user.rows[0].id,
-            whatsappNumber: whatsappNumber  // ← Add this for consistency
+            whatsappNumber: whatsappNumber
         }, JWT_SECRET, { expiresIn: '30d' });
 
         res.json({
@@ -6199,8 +6224,6 @@ router.post('/admin/domain-settings', authenticateAdmin, async (req, res) => {
     }
 });
 
-
-
 // Get user's referrals with detailed info
 router.get('/user-referrals/:userId', authenticateUser, async (req, res) => {
     try {
@@ -6308,7 +6331,5 @@ router.get('/user-referrals-stats/:userId', authenticateUser, async (req, res) =
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });
-
-
 
 module.exports = router;
