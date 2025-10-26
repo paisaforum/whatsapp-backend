@@ -372,11 +372,11 @@ router.post('/register', async (req, res) => {
         }
 
         // Capture IP address
-        const userIp = req.headers['x-forwarded-for']?.split(',')[0] || 
-                       req.headers['x-real-ip'] || 
-                       req.connection?.remoteAddress || 
-                       req.socket?.remoteAddress || 
-                       'unknown';
+        const userIp = req.headers['x-forwarded-for']?.split(',')[0] ||
+            req.headers['x-real-ip'] ||
+            req.connection?.remoteAddress ||
+            req.socket?.remoteAddress ||
+            'unknown';
 
         // Hash password
         const passwordHash = await bcrypt.hash(password, 10);
@@ -543,11 +543,11 @@ router.post('/login', async (req, res) => {
         }
 
         // Capture IP address
-        const userIp = req.headers['x-forwarded-for']?.split(',')[0] || 
-                       req.headers['x-real-ip'] || 
-                       req.connection?.remoteAddress || 
-                       req.socket?.remoteAddress || 
-                       'unknown';
+        const userIp = req.headers['x-forwarded-for']?.split(',')[0] ||
+            req.headers['x-real-ip'] ||
+            req.connection?.remoteAddress ||
+            req.socket?.remoteAddress ||
+            'unknown';
 
         // Update last login IP
         await pool.query(
@@ -6331,5 +6331,207 @@ router.get('/user-referrals-stats/:userId', authenticateUser, async (req, res) =
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });
+
+
+
+// ==================== ADMIN REFERRAL ANALYTICS ====================
+
+// Search users by ID or phone
+router.get('/admin/search-users', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { query, type } = req.query; // type: 'id' or 'phone'
+
+        let searchQuery;
+        if (type === 'id') {
+            searchQuery = await pool.query(`
+                SELECT 
+                    u.id,
+                    u.whatsapp_number,
+                    u.points,
+                    u.referral_code,
+                    u.referred_by_code,
+                    u.registration_ip,
+                    u.last_login_ip,
+                    u.is_active,
+                    u.created_at,
+                    (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals
+                FROM users u
+                WHERE u.id = $1
+            `, [query]);
+        } else {
+            searchQuery = await pool.query(`
+                SELECT 
+                    u.id,
+                    u.whatsapp_number,
+                    u.points,
+                    u.referral_code,
+                    u.referred_by_code,
+                    u.registration_ip,
+                    u.last_login_ip,
+                    u.is_active,
+                    u.created_at,
+                    (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals
+                FROM users u
+                WHERE u.whatsapp_number LIKE $1
+                LIMIT 10
+            `, [`%${query}%`]);
+        }
+
+        res.json({ users: searchQuery.rows });
+    } catch (error) {
+        console.error('Error searching users:', error);
+        res.status(500).json({ error: 'Failed to search users' });
+    }
+});
+
+// Get recent registered users
+router.get('/admin/recent-users', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { limit = 10 } = req.query;
+
+        const users = await pool.query(`
+            SELECT 
+                u.id,
+                u.whatsapp_number,
+                u.points,
+                u.referral_code,
+                u.registration_ip,
+                u.is_active,
+                u.created_at,
+                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals
+            FROM users u
+            ORDER BY u.created_at DESC
+            LIMIT $1
+        `, [limit]);
+
+        res.json({ users: users.rows });
+    } catch (error) {
+        console.error('Error fetching recent users:', error);
+        res.status(500).json({ error: 'Failed to fetch recent users' });
+    }
+});
+
+// Get user's referrals (subordinates)
+router.get('/admin/user-referrals/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        const referrals = await pool.query(`
+            SELECT 
+                r.id as referral_id,
+                r.referred_id,
+                r.status,
+                r.total_commission_earned,
+                r.created_at as joined_at,
+                u.whatsapp_number,
+                u.points,
+                u.is_active,
+                u.registration_ip,
+                u.last_login_ip,
+                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as their_referrals
+            FROM referrals r
+            JOIN users u ON r.referred_id = u.id
+            WHERE r.referrer_id = $1
+            ORDER BY r.created_at DESC
+        `, [userId]);
+
+        res.json({ referrals: referrals.rows });
+    } catch (error) {
+        console.error('Error fetching user referrals:', error);
+        res.status(500).json({ error: 'Failed to fetch referrals' });
+    }
+});
+
+// Get detailed user information
+router.get('/admin/user-details/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get user basic info
+        const userInfo = await pool.query(`
+            SELECT 
+                u.*,
+                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals,
+                (SELECT COUNT(*) FROM referrals WHERE referred_id = u.id) as is_referred,
+                (SELECT whatsapp_number FROM users WHERE referral_code = u.referred_by_code) as referrer_phone
+            FROM users u
+            WHERE u.id = $1
+        `, [userId]);
+
+        if (userInfo.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get IP statistics
+        const ipStats = await pool.query(`
+            SELECT 
+                (SELECT COUNT(DISTINCT id) FROM users WHERE registration_ip = $1 AND registration_ip IS NOT NULL) as users_same_reg_ip,
+                (SELECT COUNT(DISTINCT id) FROM users WHERE last_login_ip = $2 AND last_login_ip IS NOT NULL) as users_same_login_ip
+        `, [userInfo.rows[0].registration_ip, userInfo.rows[0].last_login_ip]);
+
+        // Get IP history
+        const ipHistory = await pool.query(`
+            SELECT * FROM user_ip_history
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 20
+        `, [userId]);
+
+        // Get activity stats
+        const activityStats = await pool.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM submissions WHERE user_id = $1) as total_submissions,
+                (SELECT COUNT(*) FROM spin_history WHERE user_id = $1) as total_spins,
+                (SELECT COUNT(*) FROM redemptions WHERE user_id = $1) as total_redemptions,
+                (SELECT SUM(points_requested) FROM redemptions WHERE user_id = $1 AND status = 'approved') as total_redeemed_points
+        `, [userId]);
+
+        res.json({
+            user: userInfo.rows[0],
+            ipStats: ipStats.rows[0],
+            ipHistory: ipHistory.rows,
+            activityStats: activityStats.rows[0]
+        });
+    } catch (error) {
+        console.error('Error fetching user details:', error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+});
+
+// IP Lookup - Find all users with specific IP
+router.get('/admin/ip-lookup', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { ip } = req.query;
+
+        const users = await pool.query(`
+            SELECT DISTINCT
+                u.id,
+                u.whatsapp_number,
+                u.registration_ip,
+                u.last_login_ip,
+                u.is_active,
+                u.created_at,
+                u.points
+            FROM users u
+            WHERE u.registration_ip = $1 OR u.last_login_ip = $1
+            ORDER BY u.created_at DESC
+        `, [ip]);
+
+        res.json({
+            ip,
+            total_users: users.rows.length,
+            users: users.rows
+        });
+    } catch (error) {
+        console.error('Error in IP lookup:', error);
+        res.status(500).json({ error: 'Failed to lookup IP' });
+    }
+});
+
 
 module.exports = router;
