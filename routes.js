@@ -6199,4 +6199,116 @@ router.post('/admin/domain-settings', authenticateAdmin, async (req, res) => {
     }
 });
 
+
+
+// Get user's referrals with detailed info
+router.get('/user-referrals/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { page = 1, limit = 20, status = 'all', sortBy = 'newest' } = req.query;
+        const offset = (page - 1) * limit;
+
+        // Build query based on filters
+        let whereClause = 'WHERE r.referrer_id = $1';
+        let orderClause = 'ORDER BY r.created_at DESC';
+
+        if (status === 'active') {
+            whereClause += " AND r.status = 'active'";
+        } else if (status === 'inactive') {
+            whereClause += " AND r.status != 'active'";
+        }
+
+        if (sortBy === 'oldest') {
+            orderClause = 'ORDER BY r.created_at ASC';
+        } else if (sortBy === 'points') {
+            orderClause = 'ORDER BY u.points DESC';
+        }
+
+        // Get referrals with their stats
+        const referralsQuery = `
+            SELECT 
+                r.id as referral_id,
+                r.referred_id,
+                r.status,
+                r.total_commission_earned as earnings_from_them,
+                r.created_at as joined_at,
+                u.whatsapp_number,
+                u.points,
+                COALESCE(u.is_active, true) as is_active,
+                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as their_referrals
+            FROM referrals r
+            JOIN users u ON r.referred_id = u.id
+            ${whereClause}
+            ${orderClause}
+            LIMIT $2 OFFSET $3
+        `;
+
+        const referrals = await pool.query(referralsQuery, [userId, limit, offset]);
+
+        // Get total count
+        const countQuery = `
+            SELECT COUNT(*) 
+            FROM referrals r
+            ${whereClause}
+        `;
+        const totalCount = await pool.query(countQuery, [userId]);
+
+        // Get user's total referral earnings
+        const earningsQuery = `
+            SELECT COALESCE(SUM(total_commission_earned), 0) as total_earnings
+            FROM referrals
+            WHERE referrer_id = $1
+        `;
+        const earnings = await pool.query(earningsQuery, [userId]);
+
+        res.json({
+            referrals: referrals.rows,
+            total: parseInt(totalCount.rows[0].count),
+            page: parseInt(page),
+            limit: parseInt(limit),
+            totalEarnings: parseInt(earnings.rows[0].total_earnings)
+        });
+
+    } catch (error) {
+        console.error('Error fetching referrals:', error);
+        res.status(500).json({ error: 'Failed to fetch referrals' });
+    }
+});
+
+// Get referral stats summary
+router.get('/user-referrals-stats/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get stats from referrals table
+        const stats = await pool.query(`
+            SELECT 
+                COUNT(*) as total_referrals,
+                COUNT(*) FILTER (WHERE r.status = 'active') as active_referrals,
+                COUNT(*) FILTER (WHERE r.status != 'active') as inactive_referrals,
+                COALESCE(SUM(u.points), 0) as total_points_by_referrals,
+                COALESCE(SUM(r.total_commission_earned), 0) as total_commission
+            FROM referrals r
+            LEFT JOIN users u ON r.referred_id = u.id
+            WHERE r.referrer_id = $1
+        `, [userId]);
+
+        res.json({
+            total_referrals: parseInt(stats.rows[0].total_referrals),
+            active_referrals: parseInt(stats.rows[0].active_referrals),
+            inactive_referrals: parseInt(stats.rows[0].inactive_referrals),
+            total_points_by_referrals: parseInt(stats.rows[0].total_points_by_referrals),
+            total_commission: parseInt(stats.rows[0].total_commission)
+        });
+
+    } catch (error) {
+        console.error('Error fetching referral stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+
+
 module.exports = router;
