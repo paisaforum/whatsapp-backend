@@ -33,6 +33,41 @@ router.get('/config', async (req, res) => {
     }
 });
 
+// ==================== POINT TRANSACTION HELPER ====================
+
+const logPointTransaction = async (pool, userId, amount, type, description, referenceId = null) => {
+    try {
+        // Get current balance
+        const userResult = await pool.query('SELECT points FROM users WHERE id = $1', [userId]);
+        const balanceAfter = userResult.rows[0]?.points || 0;
+
+        // Log transaction
+        await pool.query(`
+            INSERT INTO point_transactions (user_id, amount, transaction_type, description, reference_id, balance_after)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [userId, amount, type, description, referenceId, balanceAfter]);
+
+        // Update user's earnings column based on type
+        const earningsColumns = {
+            'spin': 'spin_earnings',
+            'referral': 'referral_earnings',
+            'task': 'task_earnings',
+            'milestone': 'milestone_earnings',
+            'signup_bonus': 'signup_bonus_earnings',
+            'streak': 'streak_earnings'
+        };
+
+        const column = earningsColumns[type];
+        if (column && amount > 0) {
+            await pool.query(`UPDATE users SET ${column} = ${column} + $1 WHERE id = $2`, [amount, userId]);
+        }
+
+        console.log(`✅ Logged transaction: User ${userId} ${amount > 0 ? '+' : ''}${amount} pts (${type})`);
+    } catch (error) {
+        console.error('Error logging point transaction:', error);
+    }
+};
+
 
 
 const logActivity = async (pool, userId, activityType, title, description, points, metadata = {}) => {
@@ -59,6 +94,8 @@ const logSpinActivity = async (pool, userId, prize, spinType) => {
         { prize, spinType }
     );
 };
+
+
 
 const logGlobalTaskActivity = async (pool, userId, phone_number, points, leadId, instantAward) => {
     const status = instantAward ? 'earned' : 'pending approval';
@@ -427,6 +464,9 @@ router.post('/register', async (req, res) => {
                     'UPDATE users SET points = points + $1 WHERE id IN ($2, $3)',
                     [signupBonus, referrerId, userId]
                 );
+                // Log transactions
+                await logPointTransaction(pool, referrerId, signupBonus, 'signup_bonus', `Signup bonus for referring ${whatsappNumber}`, userId);
+                await logPointTransaction(pool, userId, signupBonus, 'signup_bonus', `Welcome bonus for joining`, referrerId);
 
                 // Log for both users
                 const referrerUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [referrerId]);
@@ -3905,6 +3945,7 @@ router.post('/apply-referral', authenticateUser, async (req, res) => {
 
         // Award bonus to referrer
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, referrerId]);
+        await logPointTransaction(pool, referrerId, bonus, 'referral', `Referral bonus from user ${userId}`, userId);
 
         await logAdminActivity(pool, null, 'referral_bonus', `User ${userId} used referral code ${referralCode}. Referrer ${referrerId} got ${bonus} points`);
 
@@ -4098,7 +4139,11 @@ router.post('/spin', authenticateUser, async (req, res) => {
 
         // Award prize
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
+
+        // Log transaction
+        await logPointTransaction(pool, userId, prize, 'spin', `Spin reward: ${prize} points`, spinId);
         await logSpinActivity(pool, userId, prize, spinType);
+        await logPointTransaction(pool, userId, prize, 'spin', `Spin wheel reward: ${prize} points`, null);
         console.log('✅ Points added:', prize);
 
         // Update spin counts
@@ -6533,7 +6578,6 @@ router.get('/admin/ip-lookup', authenticateAdmin, async (req, res) => {
     }
 });
 
-
 // ==================== IP RISK & FLAG MANAGEMENT ====================
 
 // Get IP risk settings
@@ -6545,12 +6589,12 @@ router.get('/admin/ip-risk-settings', authenticateAdmin, async (req, res) => {
             FROM settings 
             WHERE setting_key LIKE 'ip_%'
         `);
-        
+
         const settingsObj = {};
         settings.rows.forEach(row => {
             settingsObj[row.setting_key] = row.setting_value;
         });
-        
+
         res.json(settingsObj);
     } catch (error) {
         console.error('Error fetching IP settings:', error);
@@ -6563,13 +6607,13 @@ router.put('/admin/ip-risk-settings', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { ip_risk_low_threshold, ip_risk_medium_threshold, ip_risk_high_threshold, ip_auto_action, ip_whitelist } = req.body;
-        
+
         await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_low_threshold'`, [ip_risk_low_threshold]);
         await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_medium_threshold'`, [ip_risk_medium_threshold]);
         await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_high_threshold'`, [ip_risk_high_threshold]);
         await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_auto_action'`, [ip_auto_action]);
         await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_whitelist'`, [ip_whitelist]);
-        
+
         res.json({ message: 'Settings updated successfully' });
     } catch (error) {
         console.error('Error updating IP settings:', error);
@@ -6583,20 +6627,20 @@ router.post('/admin/flag-user', authenticateAdmin, async (req, res) => {
         const pool = req.app.get('db');
         const { userId, flagReason, flagType = 'manual', ipAddress, totalAccountsOnIp } = req.body;
         const adminId = req.user.adminId;
-        
+
         // Flag the user
         await pool.query(`
             UPDATE users 
             SET is_flagged = true, flag_reason = $1, flagged_at = NOW(), flagged_by = $2 
             WHERE id = $3
         `, [flagReason, adminId, userId]);
-        
+
         // Create flag record
         await pool.query(`
             INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, ip_address, total_accounts_on_ip)
             VALUES ($1, $2, $3, $4, $5, $6)
         `, [userId, adminId, flagType, flagReason, ipAddress, totalAccountsOnIp]);
-        
+
         res.json({ message: 'User flagged successfully' });
     } catch (error) {
         console.error('Error flagging user:', error);
@@ -6609,7 +6653,7 @@ router.get('/admin/flagged-users', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { resolved = 'false' } = req.query;
-        
+
         const flaggedUsers = await pool.query(`
             SELECT 
                 u.id,
@@ -6627,7 +6671,7 @@ router.get('/admin/flagged-users', authenticateAdmin, async (req, res) => {
             WHERE u.is_flagged = true
             ORDER BY u.flagged_at DESC
         `);
-        
+
         res.json({ users: flaggedUsers.rows });
     } catch (error) {
         console.error('Error fetching flagged users:', error);
@@ -6640,7 +6684,7 @@ router.get('/admin/user-flags/:userId', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
-        
+
         const flags = await pool.query(`
             SELECT 
                 f.*,
@@ -6652,7 +6696,7 @@ router.get('/admin/user-flags/:userId', authenticateAdmin, async (req, res) => {
             WHERE f.user_id = $1
             ORDER BY f.created_at DESC
         `, [userId]);
-        
+
         res.json({ flags: flags.rows });
     } catch (error) {
         console.error('Error fetching user flags:', error);
@@ -6666,7 +6710,7 @@ router.post('/admin/resolve-flag', authenticateAdmin, async (req, res) => {
         const pool = req.app.get('db');
         const { userId, action, notes } = req.body; // action: 'cleared', 'disabled', 'whitelisted'
         const adminId = req.user.adminId;
-        
+
         // Update user based on action
         if (action === 'disabled') {
             await pool.query(`UPDATE users SET is_active = false WHERE id = $1`, [userId]);
@@ -6677,14 +6721,14 @@ router.post('/admin/resolve-flag', authenticateAdmin, async (req, res) => {
                 WHERE id = $1
             `, [userId]);
         }
-        
+
         // Mark flags as resolved
         await pool.query(`
             UPDATE user_flags 
             SET is_resolved = true, resolved_by = $1, resolved_at = NOW(), resolution_action = $2, resolution_notes = $3
             WHERE user_id = $4 AND is_resolved = false
         `, [adminId, action, notes, userId]);
-        
+
         res.json({ message: 'Flag resolved successfully' });
     } catch (error) {
         console.error('Error resolving flag:', error);
@@ -6696,20 +6740,20 @@ router.post('/admin/resolve-flag', authenticateAdmin, async (req, res) => {
 router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         // Get settings
         const settings = await pool.query(`SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'ip_%'`);
         const settingsObj = {};
         settings.rows.forEach(row => { settingsObj[row.setting_key] = row.setting_value; });
-        
+
         const highThreshold = parseInt(settingsObj.ip_risk_high_threshold) || 7;
         const autoAction = settingsObj.ip_auto_action || 'flag';
         const whitelist = settingsObj.ip_whitelist ? settingsObj.ip_whitelist.split(',').map(ip => ip.trim()) : [];
-        
+
         if (autoAction === 'none') {
             return res.json({ message: 'Auto-flagging is disabled', flagged: 0 });
         }
-        
+
         // Find IPs with high risk
         const riskyIPs = await pool.query(`
             SELECT 
@@ -6721,30 +6765,30 @@ router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
             GROUP BY registration_ip
             HAVING COUNT(*) >= $${whitelist.length + 1}
         `, [...whitelist, highThreshold]);
-        
+
         let flaggedCount = 0;
         const adminId = req.user.adminId;
-        
+
         for (const row of riskyIPs.rows) {
             const usersOnIP = await pool.query(`SELECT id FROM users WHERE registration_ip = $1 AND is_flagged = false`, [row.ip]);
-            
+
             for (const user of usersOnIP.rows) {
                 await pool.query(`
                     UPDATE users 
                     SET is_flagged = true, flag_reason = $1, flagged_at = NOW(), flagged_by = $2 
                     WHERE id = $3
                 `, [`Auto-flagged: ${row.user_count} accounts from IP ${row.ip}`, adminId, user.id]);
-                
+
                 await pool.query(`
                     INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, ip_address, total_accounts_on_ip)
                     VALUES ($1, $2, 'ip_risk', $3, $4, $5)
                 `, [user.id, adminId, `Auto-flagged: ${row.user_count} accounts from same IP`, row.ip, row.user_count]);
-                
+
                 flaggedCount++;
             }
         }
-        
-        res.json({ 
+
+        res.json({
             message: `Auto-flagging complete`,
             riskyIPs: riskyIPs.rows.length,
             flagged: flaggedCount
@@ -6761,9 +6805,9 @@ router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => 
         const pool = req.app.get('db');
         const { userId } = req.params;
         const { isActive } = req.body;
-        
+
         await pool.query(`UPDATE users SET is_active = $1 WHERE id = $2`, [isActive, userId]);
-        
+
         res.json({ message: `User ${isActive ? 'enabled' : 'disabled'} successfully` });
     } catch (error) {
         console.error('Error updating user status:', error);
@@ -6771,5 +6815,90 @@ router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => 
     }
 });
 
+
+
+// ==================== EARNINGS BREAKDOWN ====================
+
+// Get user earnings breakdown
+router.get('/admin/user-earnings/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get earnings from users table
+        const earnings = await pool.query(`
+            SELECT 
+                spin_earnings,
+                referral_earnings,
+                task_earnings,
+                milestone_earnings,
+                signup_bonus_earnings,
+                streak_earnings,
+                points
+            FROM users
+            WHERE id = $1
+        `, [userId]);
+
+        if (earnings.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get recent transactions
+        const transactions = await pool.query(`
+            SELECT *
+            FROM point_transactions
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 50
+        `, [userId]);
+
+        // Get transaction summary by type
+        const summary = await pool.query(`
+            SELECT 
+                transaction_type,
+                COUNT(*) as transaction_count,
+                SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_earned,
+                SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_spent
+            FROM point_transactions
+            WHERE user_id = $1
+            GROUP BY transaction_type
+        `, [userId]);
+
+        res.json({
+            earnings: earnings.rows[0],
+            recentTransactions: transactions.rows,
+            summary: summary.rows
+        });
+    } catch (error) {
+        console.error('Error fetching earnings:', error);
+        res.status(500).json({ error: 'Failed to fetch earnings' });
+    }
+});
+
+// Get user earnings for user-facing (non-admin)
+router.get('/user-earnings', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const userId = req.user.userId;
+
+        const earnings = await pool.query(`
+            SELECT 
+                spin_earnings,
+                referral_earnings,
+                task_earnings,
+                milestone_earnings,
+                signup_bonus_earnings,
+                streak_earnings,
+                points
+            FROM users
+            WHERE id = $1
+        `, [userId]);
+
+        res.json(earnings.rows[0]);
+    } catch (error) {
+        console.error('Error fetching user earnings:', error);
+        res.status(500).json({ error: 'Failed to fetch earnings' });
+    }
+});
 
 module.exports = router;
