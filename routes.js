@@ -2874,8 +2874,7 @@ router.put('/admin/platform-stats-config', authenticateAdmin, checkPermission('v
     try {
         const pool = req.app.get('db');
 
-        await pool.query(`
-            UPDATE platform_stats_config 
+        await pool.query(`UPDATE platform_stats_config 
             SET 
                 total_users_current = $1,
                 total_users_target = $2,
