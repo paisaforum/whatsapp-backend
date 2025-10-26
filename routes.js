@@ -6534,4 +6534,242 @@ router.get('/admin/ip-lookup', authenticateAdmin, async (req, res) => {
 });
 
 
+// ==================== IP RISK & FLAG MANAGEMENT ====================
+
+// Get IP risk settings
+router.get('/admin/ip-risk-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const settings = await pool.query(`
+            SELECT setting_key, setting_value 
+            FROM settings 
+            WHERE setting_key LIKE 'ip_%'
+        `);
+        
+        const settingsObj = {};
+        settings.rows.forEach(row => {
+            settingsObj[row.setting_key] = row.setting_value;
+        });
+        
+        res.json(settingsObj);
+    } catch (error) {
+        console.error('Error fetching IP settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// Update IP risk settings
+router.put('/admin/ip-risk-settings', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { ip_risk_low_threshold, ip_risk_medium_threshold, ip_risk_high_threshold, ip_auto_action, ip_whitelist } = req.body;
+        
+        await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_low_threshold'`, [ip_risk_low_threshold]);
+        await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_medium_threshold'`, [ip_risk_medium_threshold]);
+        await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_risk_high_threshold'`, [ip_risk_high_threshold]);
+        await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_auto_action'`, [ip_auto_action]);
+        await pool.query(`UPDATE settings SET setting_value = $1 WHERE setting_key = 'ip_whitelist'`, [ip_whitelist]);
+        
+        res.json({ message: 'Settings updated successfully' });
+    } catch (error) {
+        console.error('Error updating IP settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// Flag user manually
+router.post('/admin/flag-user', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, flagReason, flagType = 'manual', ipAddress, totalAccountsOnIp } = req.body;
+        const adminId = req.user.adminId;
+        
+        // Flag the user
+        await pool.query(`
+            UPDATE users 
+            SET is_flagged = true, flag_reason = $1, flagged_at = NOW(), flagged_by = $2 
+            WHERE id = $3
+        `, [flagReason, adminId, userId]);
+        
+        // Create flag record
+        await pool.query(`
+            INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, ip_address, total_accounts_on_ip)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [userId, adminId, flagType, flagReason, ipAddress, totalAccountsOnIp]);
+        
+        res.json({ message: 'User flagged successfully' });
+    } catch (error) {
+        console.error('Error flagging user:', error);
+        res.status(500).json({ error: 'Failed to flag user' });
+    }
+});
+
+// Get all flagged users
+router.get('/admin/flagged-users', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { resolved = 'false' } = req.query;
+        
+        const flaggedUsers = await pool.query(`
+            SELECT 
+                u.id,
+                u.whatsapp_number,
+                u.points,
+                u.is_active,
+                u.is_flagged,
+                u.flag_reason,
+                u.flagged_at,
+                u.registration_ip,
+                u.last_login_ip,
+                (SELECT COUNT(*) FROM user_flags WHERE user_id = u.id AND is_resolved = false) as active_flags,
+                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals
+            FROM users u
+            WHERE u.is_flagged = true
+            ORDER BY u.flagged_at DESC
+        `);
+        
+        res.json({ users: flaggedUsers.rows });
+    } catch (error) {
+        console.error('Error fetching flagged users:', error);
+        res.status(500).json({ error: 'Failed to fetch flagged users' });
+    }
+});
+
+// Get user's flag history
+router.get('/admin/user-flags/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        
+        const flags = await pool.query(`
+            SELECT 
+                f.*,
+                a1.username as flagged_by_username,
+                a2.username as resolved_by_username
+            FROM user_flags f
+            LEFT JOIN admins a1 ON f.flagged_by = a1.id
+            LEFT JOIN admins a2 ON f.resolved_by = a2.id
+            WHERE f.user_id = $1
+            ORDER BY f.created_at DESC
+        `, [userId]);
+        
+        res.json({ flags: flags.rows });
+    } catch (error) {
+        console.error('Error fetching user flags:', error);
+        res.status(500).json({ error: 'Failed to fetch flags' });
+    }
+});
+
+// Resolve flag
+router.post('/admin/resolve-flag', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, action, notes } = req.body; // action: 'cleared', 'disabled', 'whitelisted'
+        const adminId = req.user.adminId;
+        
+        // Update user based on action
+        if (action === 'disabled') {
+            await pool.query(`UPDATE users SET is_active = false WHERE id = $1`, [userId]);
+        } else if (action === 'cleared') {
+            await pool.query(`
+                UPDATE users 
+                SET is_flagged = false, flag_reason = NULL 
+                WHERE id = $1
+            `, [userId]);
+        }
+        
+        // Mark flags as resolved
+        await pool.query(`
+            UPDATE user_flags 
+            SET is_resolved = true, resolved_by = $1, resolved_at = NOW(), resolution_action = $2, resolution_notes = $3
+            WHERE user_id = $4 AND is_resolved = false
+        `, [adminId, action, notes, userId]);
+        
+        res.json({ message: 'Flag resolved successfully' });
+    } catch (error) {
+        console.error('Error resolving flag:', error);
+        res.status(500).json({ error: 'Failed to resolve flag' });
+    }
+});
+
+// Auto-flag users based on IP risk (can be called periodically or on-demand)
+router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        // Get settings
+        const settings = await pool.query(`SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'ip_%'`);
+        const settingsObj = {};
+        settings.rows.forEach(row => { settingsObj[row.setting_key] = row.setting_value; });
+        
+        const highThreshold = parseInt(settingsObj.ip_risk_high_threshold) || 7;
+        const autoAction = settingsObj.ip_auto_action || 'flag';
+        const whitelist = settingsObj.ip_whitelist ? settingsObj.ip_whitelist.split(',').map(ip => ip.trim()) : [];
+        
+        if (autoAction === 'none') {
+            return res.json({ message: 'Auto-flagging is disabled', flagged: 0 });
+        }
+        
+        // Find IPs with high risk
+        const riskyIPs = await pool.query(`
+            SELECT 
+                registration_ip as ip,
+                COUNT(*) as user_count
+            FROM users
+            WHERE registration_ip IS NOT NULL
+            AND registration_ip NOT IN (${whitelist.map((_, i) => `$${i + 1}`).join(',') || 'NULL'})
+            GROUP BY registration_ip
+            HAVING COUNT(*) >= $${whitelist.length + 1}
+        `, [...whitelist, highThreshold]);
+        
+        let flaggedCount = 0;
+        const adminId = req.user.adminId;
+        
+        for (const row of riskyIPs.rows) {
+            const usersOnIP = await pool.query(`SELECT id FROM users WHERE registration_ip = $1 AND is_flagged = false`, [row.ip]);
+            
+            for (const user of usersOnIP.rows) {
+                await pool.query(`
+                    UPDATE users 
+                    SET is_flagged = true, flag_reason = $1, flagged_at = NOW(), flagged_by = $2 
+                    WHERE id = $3
+                `, [`Auto-flagged: ${row.user_count} accounts from IP ${row.ip}`, adminId, user.id]);
+                
+                await pool.query(`
+                    INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, ip_address, total_accounts_on_ip)
+                    VALUES ($1, $2, 'ip_risk', $3, $4, $5)
+                `, [user.id, adminId, `Auto-flagged: ${row.user_count} accounts from same IP`, row.ip, row.user_count]);
+                
+                flaggedCount++;
+            }
+        }
+        
+        res.json({ 
+            message: `Auto-flagging complete`,
+            riskyIPs: riskyIPs.rows.length,
+            flagged: flaggedCount
+        });
+    } catch (error) {
+        console.error('Error auto-flagging:', error);
+        res.status(500).json({ error: 'Failed to auto-flag users' });
+    }
+});
+
+// Disable/Enable user
+router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { isActive } = req.body;
+        
+        await pool.query(`UPDATE users SET is_active = $1 WHERE id = $2`, [isActive, userId]);
+        
+        res.json({ message: `User ${isActive ? 'enabled' : 'disabled'} successfully` });
+    } catch (error) {
+        console.error('Error updating user status:', error);
+        res.status(500).json({ error: 'Failed to update user status' });
+    }
+});
+
+
 module.exports = router;
