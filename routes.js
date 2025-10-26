@@ -4141,7 +4141,6 @@ router.post('/spin', authenticateUser, async (req, res) => {
         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
 
         // Log transaction
-        await logPointTransaction(pool, userId, prize, 'spin', `Spin reward: ${prize} points`, spinId);
         await logSpinActivity(pool, userId, prize, spinType);
         await logPointTransaction(pool, userId, prize, 'spin', `Spin wheel reward: ${prize} points`, null);
         console.log('✅ Points added:', prize);
@@ -5879,6 +5878,9 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                     'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
                     [points, submission.assignment_id]
                 );
+                // Log transaction for earnings tracking
+                await logPointTransaction(pool, submission.user_id, points, 'task', `Task approved - Lead submission #${submission.id}`, submission.id);
+
             }
 
             // ✅ NEW: Lead Recycling Logic
