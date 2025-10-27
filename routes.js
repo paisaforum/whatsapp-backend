@@ -2013,6 +2013,85 @@ router.delete('/admin/admins/:id', authenticateAdmin, async (req, res) => {
     }
 });
 
+
+// Update admin details (username, password, role)
+router.put('/admin/admins/:id', authenticateAdmin, checkPermission('manage_admins'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { username, password, role } = req.body;
+
+        // Check if admin exists
+        const adminCheck = await pool.query('SELECT * FROM admins WHERE id = $1', [id]);
+        if (adminCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        // Prevent modifying super_admin if not super_admin
+        if (adminCheck.rows[0].role === 'super_admin' && req.admin.role !== 'super_admin') {
+            return res.status(403).json({ error: 'Cannot modify super admin' });
+        }
+
+        // Build update query dynamically
+        const updates = [];
+        const values = [];
+        let paramCount = 1;
+
+        if (username) {
+            // Check if username is taken by another admin
+            const usernameCheck = await pool.query(
+                'SELECT id FROM admins WHERE username = $1 AND id != $2',
+                [username, id]
+            );
+            if (usernameCheck.rows.length > 0) {
+                return res.status(400).json({ error: 'Username already taken' });
+            }
+            updates.push(`username = $${paramCount}`);
+            values.push(username);
+            paramCount++;
+        }
+
+        if (password) {
+            const bcrypt = require('bcrypt');
+            const hashedPassword = await bcrypt.hash(password, 10);
+            updates.push(`password_hash = $${paramCount}`);
+            values.push(hashedPassword);
+            paramCount++;
+        }
+
+        if (role) {
+            // Only super_admin can change roles
+            if (req.admin.role !== 'super_admin') {
+                return res.status(403).json({ error: 'Only super admin can change roles' });
+            }
+            updates.push(`role = $${paramCount}`);
+            values.push(role);
+            paramCount++;
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        // Add id to values
+        values.push(id);
+
+        // Execute update
+        await pool.query(
+            `UPDATE admins SET ${updates.join(', ')} WHERE id = $${paramCount}`,
+            values
+        );
+
+        // Log activity
+        await logAdminActivity(pool, req.admin.adminId, 'update_admin', `Updated admin ${id}`);
+
+        res.json({ message: 'Admin updated successfully' });
+    } catch (error) {
+        console.error('Error updating admin:', error);
+        res.status(500).json({ error: 'Failed to update admin' });
+    }
+});
+
 // Toggle admin active status (SUPER ADMIN ONLY)
 router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, res) => {
     try {
