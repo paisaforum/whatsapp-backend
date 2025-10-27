@@ -4267,6 +4267,8 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
                         'UPDATE users SET points = points + $1 WHERE id = $2',
                         [bonus, userId]
                     );
+                    await logPointTransaction(pool, userId, bonus, 'milestone', `Milestone reward: ${milestoneShares} shares completed`, milestoneShares);
+
 
                     // ✅ ADD THIS: Log milestone activity
                     const totalShares = await pool.query('SELECT COUNT(*) as total FROM submissions WHERE user_id = $1', [userId]);
@@ -4295,7 +4297,7 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
 });
 
 
-// Get user milestones
+
 // Get user milestones
 router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
     try {
