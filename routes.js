@@ -3352,89 +3352,73 @@ router.get('/admin/dashboard-stats', authenticateAdmin, async (req, res) => {
 });
 
 // Admin Dashboard Charts
-// Admin Dashboard Charts (REPLACE the existing one)
+// Admin Dashboard Charts (SAFE VERSION)
 router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { dateRange, startDate, endDate } = req.query;
+        const { dateRange } = req.query;
 
-        // Calculate date filter
-        let dateFilter = 'WHERE created_at >= CURRENT_DATE - INTERVAL \'7 days\'';
-        if (dateRange === 'today') {
-            dateFilter = "WHERE created_at >= CURRENT_DATE";
-        } else if (dateRange === 'yesterday') {
-            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' AND created_at < CURRENT_DATE";
-        } else if (dateRange === 'week') {
-            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'";
-        } else if (dateRange === 'month') {
-            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'";
-        } else if (dateRange === 'year') {
-            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '1 year'";
-        } else if (dateRange === 'custom' && startDate && endDate) {
-            dateFilter = `WHERE created_at >= '${startDate}' AND created_at <= '${endDate}'`;
-        }
+        // Determine days back
+        let daysBack = 7;
+        if (dateRange === 'today') daysBack = 1;
+        else if (dateRange === 'yesterday') daysBack = 2;
+        else if (dateRange === 'week') daysBack = 7;
+        else if (dateRange === 'month') daysBack = 30;
+        else if (dateRange === 'year') daysBack = 365;
 
-        // Get all dates in range
-        const datesQuery = `
-            SELECT DISTINCT TO_CHAR(DATE(created_at), 'MM/DD') as date
-            FROM users
-            ${dateFilter}
-            ORDER BY date
-        `;
-        const dates = await pool.query(datesQuery);
-
-        // Build comprehensive overview data
-        const userGrowthData = [];
-        for (const dateRow of dates.rows) {
-            const date = dateRow.date;
-
-            // Users registered on this date
-            const usersCount = await pool.query(`
-                SELECT COUNT(*) as count
+        // Comprehensive Overview Data
+        const userGrowth = await pool.query(`
+            WITH date_series AS (
+                SELECT TO_CHAR(generate_series(
+                    CURRENT_DATE - INTERVAL '${daysBack} days',
+                    CURRENT_DATE,
+                    '1 day'
+                )::date, 'MM/DD') as date
+            )
+            SELECT 
+                ds.date,
+                COALESCE(u.count, 0) as users,
+                COALESCE(r.count, 0) as redemptions,
+                COALESCE(p.total, 0) as "pointsDistributed",
+                COALESCE(t.count, 0) as "tasksCompleted"
+            FROM date_series ds
+            LEFT JOIN (
+                SELECT TO_CHAR(DATE(created_at), 'MM/DD') as date, COUNT(*) as count
                 FROM users
-                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1
-            `, [date]);
-
-            // Redemptions on this date
-            const redemptionsCount = await pool.query(`
-                SELECT COUNT(*) as count
+                WHERE created_at >= CURRENT_DATE - INTERVAL '${daysBack} days'
+                GROUP BY DATE(created_at)
+            ) u ON ds.date = u.date
+            LEFT JOIN (
+                SELECT TO_CHAR(DATE(requested_at), 'MM/DD') as date, COUNT(*) as count
                 FROM redemptions
-                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1 AND status = 'approved'
-            `, [date]);
-
-            // Points distributed on this date
-            const pointsSum = await pool.query(`
-                SELECT COALESCE(SUM(amount), 0) as total
+                WHERE requested_at >= CURRENT_DATE - INTERVAL '${daysBack} days' AND status = 'approved'
+                GROUP BY DATE(requested_at)
+            ) r ON ds.date = r.date
+            LEFT JOIN (
+                SELECT TO_CHAR(DATE(created_at), 'MM/DD') as date, SUM(amount) as total
                 FROM point_transactions
-                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1 AND amount > 0
-            `, [date]);
-
-            // Tasks completed on this date
-            const tasksCount = await pool.query(`
-                SELECT COUNT(*) as count
+                WHERE created_at >= CURRENT_DATE - INTERVAL '${daysBack} days' AND amount > 0
+                GROUP BY DATE(created_at)
+            ) p ON ds.date = p.date
+            LEFT JOIN (
+                SELECT TO_CHAR(DATE(completed_at), 'MM/DD') as date, COUNT(*) as count
                 FROM user_lead_assignments
-                WHERE TO_CHAR(DATE(completed_at), 'MM/DD') = $1 AND status = 'approved'
-            `, [date]);
+                WHERE completed_at >= CURRENT_DATE - INTERVAL '${daysBack} days' AND status = 'approved'
+                GROUP BY DATE(completed_at)
+            ) t ON ds.date = t.date
+            ORDER BY ds.date
+        `);
 
-            userGrowthData.push({
-                date,
-                users: parseInt(usersCount.rows[0].count),
-                redemptions: parseInt(redemptionsCount.rows[0].count),
-                pointsDistributed: parseInt(pointsSum.rows[0].total),
-                tasksCompleted: parseInt(tasksCount.rows[0].count)
-            });
-        }
-
-        // Task Completion breakdown
+        // Task Completion
         const taskCompletion = await pool.query(`
             SELECT 
-                TO_CHAR(DATE(COALESCE(completed_at, created_at)), 'MM/DD') as date,
-                COUNT(*) FILTER (WHERE completed_at IS NOT NULL) as "globalTasks",
+                TO_CHAR(DATE(completed_at), 'MM/DD') as date,
+                COUNT(*) as "globalTasks",
                 0 as "personalShare"
             FROM user_lead_assignments
-            ${dateFilter.replace('created_at', 'COALESCE(completed_at, created_at)')}
-            GROUP BY DATE(COALESCE(completed_at, created_at))
-            ORDER BY DATE(COALESCE(completed_at, created_at))
+            WHERE completed_at >= CURRENT_DATE - INTERVAL '${daysBack} days' AND status = 'approved'
+            GROUP BY DATE(completed_at)
+            ORDER BY DATE(completed_at)
         `);
 
         // Redemptions Breakdown
@@ -3455,10 +3439,11 @@ router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
             WHERE amount > 0
             GROUP BY transaction_type
             ORDER BY points DESC
+            LIMIT 10
         `);
 
         res.json({
-            userGrowth: userGrowthData,
+            userGrowth: userGrowth.rows,
             taskCompletion: taskCompletion.rows,
             redemptions: redemptions.rows,
             pointsDistribution: pointsDistribution.rows
@@ -3466,10 +3451,9 @@ router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('Error fetching dashboard charts:', error);
-        res.status(500).json({ error: 'Failed to fetch chart data' });
+        res.status(500).json({ error: 'Failed to fetch chart data', details: error.message });
     }
 });
-
 // Recent Activities
 router.get('/admin/recent-activities', authenticateAdmin, async (req, res) => {
     try {
