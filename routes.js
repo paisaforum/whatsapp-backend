@@ -3352,30 +3352,87 @@ router.get('/admin/dashboard-stats', authenticateAdmin, async (req, res) => {
 });
 
 // Admin Dashboard Charts
+// Admin Dashboard Charts (REPLACE the existing one)
 router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
+        const { dateRange, startDate, endDate } = req.query;
 
-        // User Growth (last 7 days)
-        const userGrowth = await pool.query(`
-            SELECT 
-                TO_CHAR(DATE(created_at), 'MM/DD') as date,
-                COUNT(*) as users,
-                0 as active
+        // Calculate date filter
+        let dateFilter = 'WHERE created_at >= CURRENT_DATE - INTERVAL \'7 days\'';
+        if (dateRange === 'today') {
+            dateFilter = "WHERE created_at >= CURRENT_DATE";
+        } else if (dateRange === 'yesterday') {
+            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' AND created_at < CURRENT_DATE";
+        } else if (dateRange === 'week') {
+            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'";
+        } else if (dateRange === 'month') {
+            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'";
+        } else if (dateRange === 'year') {
+            dateFilter = "WHERE created_at >= CURRENT_DATE - INTERVAL '1 year'";
+        } else if (dateRange === 'custom' && startDate && endDate) {
+            dateFilter = `WHERE created_at >= '${startDate}' AND created_at <= '${endDate}'`;
+        }
+
+        // Get all dates in range
+        const datesQuery = `
+            SELECT DISTINCT TO_CHAR(DATE(created_at), 'MM/DD') as date
             FROM users
-            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
-            GROUP BY DATE(created_at)
-            ORDER BY DATE(created_at)
-        `);
+            ${dateFilter}
+            ORDER BY date
+        `;
+        const dates = await pool.query(datesQuery);
 
-        // Task Completion (last 7 days)
+        // Build comprehensive overview data
+        const userGrowthData = [];
+        for (const dateRow of dates.rows) {
+            const date = dateRow.date;
+
+            // Users registered on this date
+            const usersCount = await pool.query(`
+                SELECT COUNT(*) as count
+                FROM users
+                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1
+            `, [date]);
+
+            // Redemptions on this date
+            const redemptionsCount = await pool.query(`
+                SELECT COUNT(*) as count
+                FROM redemptions
+                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1 AND status = 'approved'
+            `, [date]);
+
+            // Points distributed on this date
+            const pointsSum = await pool.query(`
+                SELECT COALESCE(SUM(amount), 0) as total
+                FROM point_transactions
+                WHERE TO_CHAR(DATE(created_at), 'MM/DD') = $1 AND amount > 0
+            `, [date]);
+
+            // Tasks completed on this date
+            const tasksCount = await pool.query(`
+                SELECT COUNT(*) as count
+                FROM user_lead_assignments
+                WHERE TO_CHAR(DATE(completed_at), 'MM/DD') = $1 AND status = 'approved'
+            `, [date]);
+
+            userGrowthData.push({
+                date,
+                users: parseInt(usersCount.rows[0].count),
+                redemptions: parseInt(redemptionsCount.rows[0].count),
+                pointsDistributed: parseInt(pointsSum.rows[0].total),
+                tasksCompleted: parseInt(tasksCount.rows[0].count)
+            });
+        }
+
+        // Task Completion breakdown
         const taskCompletion = await pool.query(`
             SELECT 
                 TO_CHAR(DATE(COALESCE(completed_at, created_at)), 'MM/DD') as date,
                 COUNT(*) FILTER (WHERE completed_at IS NOT NULL) as "globalTasks",
                 0 as "personalShare"
             FROM user_lead_assignments
-            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+            ${dateFilter.replace('created_at', 'COALESCE(completed_at, created_at)')}
             GROUP BY DATE(COALESCE(completed_at, created_at))
             ORDER BY DATE(COALESCE(completed_at, created_at))
         `);
@@ -3401,11 +3458,12 @@ router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
         `);
 
         res.json({
-            userGrowth: userGrowth.rows,
+            userGrowth: userGrowthData,
             taskCompletion: taskCompletion.rows,
             redemptions: redemptions.rows,
             pointsDistribution: pointsDistribution.rows
         });
+
     } catch (error) {
         console.error('Error fetching dashboard charts:', error);
         res.status(500).json({ error: 'Failed to fetch chart data' });
