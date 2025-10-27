@@ -3804,7 +3804,7 @@ router.get('/admin/personal-share/submissions/users', authenticateAdmin, checkPe
             FROM users u
             INNER JOIN personal_share_submissions pss ON u.id = pss.user_id
             WHERE 1=1 ${statusFilter}
-            GROUP BY u.id, u.whatsapp_number, u.full_name
+            GROUP BY u.id, u.whatsapp_number
             ORDER BY MAX(pss.created_at) DESC
         `);
 
@@ -7632,7 +7632,7 @@ router.get('/admin/personal-share/submissions/users', authenticateAdmin, checkPe
         }
 
         query += `
-            GROUP BY u.id, u.whatsapp_number, u.full_name
+            GROUP BY u.id, u.whatsapp_number
             ORDER BY MAX(pss.created_at) DESC
         `;
 
