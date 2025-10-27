@@ -3298,6 +3298,144 @@ router.get('/admin/system-stats', authenticateAdmin, checkPermission('view_analy
     }
 });
 
+// Admin Dashboard Stats
+router.get('/admin/dashboard-stats', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Total Users
+        const totalUsers = await pool.query('SELECT COUNT(*) as count FROM users');
+
+        // Total Points Distributed
+        const totalPoints = await pool.query('SELECT COALESCE(SUM(amount), 0) as total FROM point_transactions WHERE amount > 0');
+
+        // Total Redeemed
+        const totalRedeemed = await pool.query("SELECT COALESCE(SUM(points_requested), 0) as total FROM redemptions WHERE status = 'approved'");
+
+        // Active Today
+        const activeToday = await pool.query("SELECT COUNT(DISTINCT user_id) as count FROM activity_log WHERE created_at >= CURRENT_DATE");
+
+        // New Users Today
+        const newUsersToday = await pool.query("SELECT COUNT(*) as count FROM users WHERE created_at >= CURRENT_DATE");
+
+        // Redemption Stats
+        const pendingRedemptions = await pool.query("SELECT COUNT(*) as count FROM redemptions WHERE status = 'pending'");
+        const approvedRedemptions = await pool.query("SELECT COUNT(*) as count FROM redemptions WHERE status = 'approved'");
+        const rejectedRedemptions = await pool.query("SELECT COUNT(*) as count FROM redemptions WHERE status = 'rejected'");
+
+        // Commission Points
+        const commissionPoints = await pool.query("SELECT COALESCE(SUM(amount), 0) as total FROM point_transactions WHERE transaction_type = 'referral'");
+
+        // Global Task Participants
+        const globalTaskParticipants = await pool.query("SELECT COUNT(DISTINCT user_id) as count FROM user_lead_assignments");
+
+        // Personal Share Participants
+        const personalShareParticipants = await pool.query("SELECT COUNT(DISTINCT s.user_id) as count FROM submissions s WHERE s.status = 'active'");
+
+        res.json({
+            totalUsers: parseInt(totalUsers.rows[0].count),
+            totalPointsDistributed: parseInt(totalPoints.rows[0].total),
+            totalRedeemed: parseInt(totalRedeemed.rows[0].total),
+            activeToday: parseInt(activeToday.rows[0].count),
+            newUsersToday: parseInt(newUsersToday.rows[0].count),
+            pendingRedemptions: parseInt(pendingRedemptions.rows[0].count),
+            approvedRedemptions: parseInt(approvedRedemptions.rows[0].count),
+            rejectedRedemptions: parseInt(rejectedRedemptions.rows[0].count),
+            commissionDistributed: parseInt(commissionPoints.rows[0].total),
+            globalTaskParticipants: parseInt(globalTaskParticipants.rows[0].count),
+            personalShareParticipants: parseInt(personalShareParticipants.rows[0].count)
+        });
+    } catch (error) {
+        console.error('Error fetching dashboard stats:', error);
+        res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+    }
+});
+
+// Admin Dashboard Charts
+router.get('/admin/dashboard-charts', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // User Growth (last 7 days)
+        const userGrowth = await pool.query(`
+            SELECT 
+                TO_CHAR(DATE(created_at), 'MM/DD') as date,
+                COUNT(*) as users,
+                0 as active
+            FROM users
+            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+        `);
+
+        // Task Completion (last 7 days)
+        const taskCompletion = await pool.query(`
+            SELECT 
+                TO_CHAR(DATE(COALESCE(completed_at, created_at)), 'MM/DD') as date,
+                COUNT(*) FILTER (WHERE completed_at IS NOT NULL) as "globalTasks",
+                0 as "personalShare"
+            FROM user_lead_assignments
+            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY DATE(COALESCE(completed_at, created_at))
+            ORDER BY DATE(COALESCE(completed_at, created_at))
+        `);
+
+        // Redemptions Breakdown
+        const redemptions = await pool.query(`
+            SELECT 
+                status as name,
+                COUNT(*)::int as value
+            FROM redemptions
+            GROUP BY status
+        `);
+
+        // Points Distribution
+        const pointsDistribution = await pool.query(`
+            SELECT 
+                transaction_type as category,
+                SUM(amount)::int as points
+            FROM point_transactions
+            WHERE amount > 0
+            GROUP BY transaction_type
+            ORDER BY points DESC
+        `);
+
+        res.json({
+            userGrowth: userGrowth.rows,
+            taskCompletion: taskCompletion.rows,
+            redemptions: redemptions.rows,
+            pointsDistribution: pointsDistribution.rows
+        });
+    } catch (error) {
+        console.error('Error fetching dashboard charts:', error);
+        res.status(500).json({ error: 'Failed to fetch chart data' });
+    }
+});
+
+// Recent Activities
+router.get('/admin/recent-activities', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { limit = 10 } = req.query;
+
+        const activities = await pool.query(`
+            SELECT 
+                activity_type,
+                title,
+                description,
+                created_at
+            FROM activity_log
+            ORDER BY created_at DESC
+            LIMIT $1
+        `, [limit]);
+
+        res.json(activities.rows);
+    } catch (error) {
+        console.error('Error fetching recent activities:', error);
+        res.status(500).json({ error: 'Failed to fetch activities' });
+    }
+});
+
 
 // ============================================
 // ANALYTICS ROUTES (Admin Only)
@@ -5883,6 +6021,7 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                 // Log transaction for earnings tracking
                 await logPointTransaction(pool, submission.user_id, points, 'task', `Task approved - Lead submission #${submission.id}`, submission.id);
 
+
                 // Auto-check milestones after task completion
                 try {
                     // Get share count
@@ -5900,22 +6039,22 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                     `, [submission.user_id]);
 
                     const shareCount = parseInt(personalShares.rows[0].total) + parseInt(globalTasks.rows[0].total);
-                    
+
                     // Check milestones
                     const milestones = await pool.query(`
                         SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key
                     `);
-                    
+
                     for (const m of milestones.rows) {
                         const shares = parseInt(m.setting_key.replace('milestone_', ''));
                         const bonus = parseInt(m.setting_value);
-                        
+
                         if (shareCount >= shares) {
                             const exists = await pool.query(
                                 'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
                                 [submission.user_id, 'shares', shares]
                             );
-                            
+
                             if (exists.rows.length === 0) {
                                 await pool.query(
                                     'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
@@ -5930,7 +6069,6 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                 } catch (error) {
                     console.error('Error auto-checking milestones:', error);
                 }
-                
 
             }
 
