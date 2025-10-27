@@ -3721,6 +3721,214 @@ router.get('/admin/analytics/overview', authenticateAdmin, checkPermission('view
 });
 
 
+
+// ========================================
+// PERSONAL SHARE TASK MANAGEMENT
+// ========================================
+
+// Get Personal Share Settings
+router.get('/admin/personal-share/settings', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const result = await pool.query('SELECT * FROM personal_share_settings ORDER BY id DESC LIMIT 1');
+
+        if (result.rows.length === 0) {
+            // Create default settings if none exist
+            const defaultSettings = await pool.query(`
+                INSERT INTO personal_share_settings (title, description, points_per_submission) 
+                VALUES ($1, $2, $3) 
+                RETURNING *
+            `, ['Personal Share Task', 'Share offers with your contacts', 5]);
+            return res.json(defaultSettings.rows[0]);
+        }
+
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Error fetching personal share settings:', error);
+        res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+// Update Personal Share Configuration
+router.put('/admin/personal-share/configuration', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { title, description, messageTemplate, offerImageUrl, status } = req.body;
+
+        await pool.query(`
+            UPDATE personal_share_settings 
+            SET title = $1, description = $2, message_template = $3, offer_image_url = $4, status = $5, updated_at = CURRENT_TIMESTAMP
+            WHERE id = (SELECT id FROM personal_share_settings ORDER BY id DESC LIMIT 1)
+        `, [title, description, messageTemplate, offerImageUrl, status]);
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_personal_share_config', 'Updated personal share configuration');
+
+        res.json({ message: 'Configuration updated successfully' });
+    } catch (error) {
+        console.error('Error updating personal share configuration:', error);
+        res.status(500).json({ error: 'Failed to update configuration' });
+    }
+});
+
+// Update Personal Share Task Settings
+router.put('/admin/personal-share/settings', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { pointsPerSubmission, instantPointsAward, adminReviewRequired } = req.body;
+
+        await pool.query(`
+            UPDATE personal_share_settings 
+            SET points_per_submission = $1, instant_points_award = $2, admin_review_required = $3, updated_at = CURRENT_TIMESTAMP
+            WHERE id = (SELECT id FROM personal_share_settings ORDER BY id DESC LIMIT 1)
+        `, [pointsPerSubmission, instantPointsAward, adminReviewRequired]);
+
+        await logAdminActivity(pool, req.admin.adminId, 'update_personal_share_settings', 'Updated personal share task settings');
+
+        res.json({ message: 'Settings updated successfully' });
+    } catch (error) {
+        console.error('Error updating personal share settings:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// Get Personal Share Submissions - User List
+router.get('/admin/personal-share/submissions/users', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { status } = req.query;
+
+        let statusFilter = '';
+        if (status && status !== 'all') {
+            statusFilter = `AND pss.status = '${status}'`;
+        }
+
+        const result = await pool.query(`
+            SELECT 
+                u.id as user_id,
+                u.whatsapp_number,
+                u.full_name,
+                COUNT(pss.id) as total_submissions,
+                COUNT(CASE WHEN pss.status = 'pending' THEN 1 END) as pending_count,
+                COUNT(CASE WHEN pss.status = 'approved' THEN 1 END) as approved_count,
+                COUNT(CASE WHEN pss.status = 'rejected' THEN 1 END) as rejected_count,
+                SUM(pss.points_awarded) as total_points_earned,
+                MAX(pss.created_at) as last_submission_date
+            FROM users u
+            INNER JOIN personal_share_submissions pss ON u.id = pss.user_id
+            WHERE 1=1 ${statusFilter}
+            GROUP BY u.id, u.whatsapp_number, u.full_name
+            ORDER BY MAX(pss.created_at) DESC
+        `);
+
+        res.json({ users: result.rows });
+    } catch (error) {
+        console.error('Error fetching personal share users:', error);
+        res.status(500).json({ error: 'Failed to fetch users' });
+    }
+});
+
+// Get Personal Share Submissions by User
+router.get('/admin/personal-share/submissions/user/:userId', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { status } = req.query;
+
+        let statusFilter = '';
+        if (status && status !== 'all') {
+            statusFilter = `AND pss.status = '${status}'`;
+        }
+
+        const result = await pool.query(`
+            SELECT 
+                pss.*,
+                u.whatsapp_number,
+                u.full_name,
+                a.username as reviewed_by_username
+            FROM personal_share_submissions pss
+            INNER JOIN users u ON pss.user_id = u.id
+            LEFT JOIN admins a ON pss.reviewed_by = a.id
+            WHERE pss.user_id = $1 ${statusFilter}
+            ORDER BY pss.created_at DESC
+        `, [userId]);
+
+        res.json({ submissions: result.rows });
+    } catch (error) {
+        console.error('Error fetching user submissions:', error);
+        res.status(500).json({ error: 'Failed to fetch submissions' });
+    }
+});
+
+// Review Personal Share Submission
+router.post('/admin/personal-share/review-submission', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { submissionId, action, adminNotes } = req.body;
+
+        // Get submission and settings
+        const submission = await pool.query('SELECT * FROM personal_share_submissions WHERE id = $1', [submissionId]);
+        if (submission.rows.length === 0) {
+            return res.status(404).json({ error: 'Submission not found' });
+        }
+
+        const settings = await pool.query('SELECT * FROM personal_share_settings ORDER BY id DESC LIMIT 1');
+        const pointsPerSubmission = settings.rows[0]?.points_per_submission || 5;
+
+        const status = action === 'approve' ? 'approved' : 'rejected';
+        const pointsAwarded = action === 'approve' ? pointsPerSubmission : 0;
+
+        // Update submission
+        await pool.query(`
+            UPDATE personal_share_submissions 
+            SET status = $1, admin_notes = $2, points_awarded = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $5
+        `, [status, adminNotes, pointsAwarded, req.admin.adminId, submissionId]);
+
+        // Award points if approved
+        if (action === 'approve') {
+            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsAwarded, submission.rows[0].user_id]);
+
+            // Log transaction
+            await pool.query(`
+                INSERT INTO point_transactions (user_id, amount, transaction_type, description)
+                VALUES ($1, $2, 'personal_share_approved', $3)
+            `, [submission.rows[0].user_id, pointsAwarded, `Personal share submission approved - ${pointsAwarded} points`]);
+        }
+
+        await logAdminActivity(pool, req.admin.adminId, 'review_personal_share', `${action} submission #${submissionId}`);
+
+        res.json({ message: `Submission ${action}d successfully` });
+    } catch (error) {
+        console.error('Error reviewing submission:', error);
+        res.status(500).json({ error: 'Failed to review submission' });
+    }
+});
+
+// Get Personal Share Statistics
+router.get('/admin/personal-share/stats', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const stats = await pool.query(`
+            SELECT 
+                COUNT(*) as total_submissions,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+                COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved,
+                COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected,
+                SUM(points_awarded) as total_points_awarded,
+                COUNT(DISTINCT user_id) as total_users
+            FROM personal_share_submissions
+        `);
+
+        res.json(stats.rows[0]);
+    } catch (error) {
+        console.error('Error fetching personal share stats:', error);
+        res.status(500).json({ error: 'Failed to fetch statistics' });
+    }
+});
+
+
+
 // ============================================
 // BANNER MANAGEMENT ROUTES
 // ============================================
