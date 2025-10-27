@@ -3795,7 +3795,6 @@ router.get('/admin/personal-share/submissions/users', authenticateAdmin, checkPe
             SELECT 
                 u.id as user_id,
                 u.whatsapp_number,
-                u.full_name,
                 COUNT(pss.id) as total_submissions,
                 COUNT(CASE WHEN pss.status = 'pending' THEN 1 END) as pending_count,
                 COUNT(CASE WHEN pss.status = 'approved' THEN 1 END) as approved_count,
@@ -3832,7 +3831,6 @@ router.get('/admin/personal-share/submissions/user/:userId', authenticateAdmin, 
             SELECT 
                 pss.*,
                 u.whatsapp_number,
-                u.full_name,
                 a.username as reviewed_by_username
             FROM personal_share_submissions pss
             INNER JOIN users u ON pss.user_id = u.id
