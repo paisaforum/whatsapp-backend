@@ -1803,14 +1803,24 @@ router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) 
         const pool = req.app.get('db');
         const { id } = req.params;
 
-        // Check if super admin
+        // Admins can only view their own permissions unless they're super_admin
+        if (req.admin.adminId !== parseInt(id) && req.admin.role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        // Get admin role
         const adminCheck = await pool.query(
             'SELECT role FROM admins WHERE id = $1',
-            [req.admin.adminId]
+            [id]
         );
 
-        if (adminCheck.rows[0].role !== 'super_admin') {
-            return res.status(403).json({ error: 'Access denied' });
+        if (adminCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        // Super admins have all permissions
+        if (adminCheck.rows[0].role === 'super_admin') {
+            return res.json({ permissions: ['*'] });
         }
 
         const result = await pool.query(
@@ -1820,18 +1830,13 @@ router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) 
 
         const permissions = result.rows.map(row => row.permission);
 
-        await logAdminActivity(pool, req.admin.adminId, 'update_admin_permissions', `Updated permissions for admin ID ${adminId}`);
-
-        await logAdminActivity(pool, req.admin.adminId, 'update_admin_permissions', `Updated permissions for admin ID ${adminId}`);
-
-        await logAdminActivity(pool, req.admin.adminId, 'delete_admin', `Deleted admin ID ${adminId}`);
-
         res.json({ permissions });
     } catch (error) {
         console.error('Error fetching permissions:', error);
         res.status(500).json({ error: 'Failed to fetch permissions' });
     }
 });
+
 
 // Create new admin (SUPER ADMIN ONLY)
 router.post('/admin/create-admin', authenticateAdmin, async (req, res) => {
