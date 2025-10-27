@@ -762,7 +762,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to load dashboard' });
     }
 });
-// Submit proof endpoint
+// Submit proof endpoint (ENHANCED with settings)
 router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
@@ -775,6 +775,14 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         const pool = req.app.get('db');
         const numbers = JSON.parse(recipientNumbers);
         let streakBonus = 0;
+
+        // Get personal share settings
+        const settingsResult = await pool.query('SELECT * FROM personal_share_settings ORDER BY id DESC LIMIT 1');
+        const settings = settingsResult.rows[0] || {
+            points_per_submission: 1,
+            instant_points_award: true,
+            admin_review_required: false
+        };
 
         // Validate counts match
         if (numbers.length !== screenshots.length) {
@@ -799,278 +807,219 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // Store screenshot paths
         const screenshotPaths = screenshots.map(file => `/uploads/submissions/${file.filename}`);
 
-        // Create submission
+        // Calculate points based on settings
+        const basePoints = settings.points_per_submission * numbers.length;
+        const instantPoints = settings.instant_points_award !== false;
+        const adminReview = settings.admin_review_required === true;
+
+        // Determine status and initial points
+        let status = adminReview ? 'pending' : 'approved';
+        let pointsToAward = (instantPoints || !adminReview) ? basePoints : 0;
+
+        // Store in NEW personal_share_submissions table
+        const submissionData = {
+            screenshots: screenshotPaths,
+            recipients: numbers
+        };
+
         const submission = await pool.query(
-            `INSERT INTO submissions (user_id, screenshots, recipient_count, points_awarded, status) 
-             VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
-            [userId, screenshotPaths, numbers.length, numbers.length]
+            `INSERT INTO personal_share_submissions (user_id, screenshot_url, recipient_numbers, points_awarded, status, created_at) 
+             VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) RETURNING id`,
+            [userId, screenshotPaths[0], JSON.stringify(submissionData), pointsToAward, status]
         );
 
         const submissionId = submission.rows[0].id;
 
-        // Update user's total points
-        await pool.query(
-            'UPDATE users SET points = points + $1 WHERE id = $2',
-            [numbers.length, userId]
-        );
+        // Award initial points if applicable
+        if (pointsToAward > 0) {
+            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsToAward, userId]);
 
-        // ✅ ADD THIS: Log personal share
-        await logPersonalShareActivity(pool, userId, numbers.length, numbers.length, 'offer');
+            await pool.query(`
+                INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at)
+                VALUES ($1, $2, 'personal_share_submission', $3, CURRENT_TIMESTAMP)
+            `, [userId, pointsToAward, `Personal share - ${numbers.length} recipients`]);
+        }
 
-        // 1. UPDATE STREAK
-        try {
-            const today = new Date().toISOString().split('T')[0];
-            let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+        // Only award bonuses if approved (not pending review)
+        if (status === 'approved') {
+            // Log activity
+            await logPersonalShareActivity(pool, userId, numbers.length, pointsToAward, 'offer');
 
-            if (streak.rows.length === 0) {
-                // First time submitter
-                await pool.query(
-                    'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
-                    [userId, today]
-                );
+            // 1. UPDATE STREAK
+            try {
+                const today = new Date().toISOString().split('T')[0];
+                let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
 
-                // Check if Day 1 has a bonus
-                const day1Settings = await pool.query(
-                    'SELECT setting_value FROM settings WHERE setting_key = $1',
-                    ['streak_day1_bonus']
-                );
-
-                const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
-
-                if (day1Bonus > 0) {
-                    streakBonus = day1Bonus;
-                    await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
-
-                    // ✅ ADD THIS: Log streak activity
-                    const day2Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day2_bonus']);
-                    const day2Bonus = parseInt(day2Settings.rows[0]?.setting_value) || 0;
-                    await logStreakActivity(pool, userId, 1, day1Bonus, day2Bonus);
-
-
+                if (streak.rows.length === 0) {
                     await pool.query(
-                        'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
-                        [day1Bonus, submissionId]
+                        'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
+                        [userId, today]
                     );
 
-                    await pool.query(
-                        'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                        [userId, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
-                    );
-                }
+                    const day1Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day1_bonus']);
+                    const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
 
-            } else {
-                const lastShareDate = streak.rows[0].last_share_date
-                    ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
-                    : null;
-                const currentStreak = streak.rows[0].current_streak;
+                    if (day1Bonus > 0) {
+                        streakBonus = day1Bonus;
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
 
-                if (lastShareDate !== today) {
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const yesterdayStr = yesterday.toISOString().split('T')[0];
-
-                    let newStreak = 1;
-                    if (lastShareDate === yesterdayStr) {
-                        newStreak = currentStreak + 1;
-                    }
-
-                    // Get streak bonus for this specific day
-                    streakBonus = 0;
-                    let settingKey = '';
-
-                    if (newStreak <= 7) {
-                        settingKey = `streak_day${newStreak}_bonus`;
-                    } else if (newStreak === 30) {
-                        settingKey = 'streak_30day_bonus';
-                    } else if (newStreak % 30 === 0) {
-                        settingKey = 'streak_30day_bonus';
-                    }
-
-                    if (settingKey) {
-                        const bonusSettings = await pool.query(
-                            'SELECT setting_value FROM settings WHERE setting_key = $1',
-                            [settingKey]
-                        );
-                        streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
-                    }
-
-                    // Update streak data
-                    await pool.query(
-                        `UPDATE user_streaks 
-                         SET current_streak = $1, 
-                             longest_streak = GREATEST(longest_streak, $1),
-                             last_share_date = $2,
-                             total_streak_bonuses = total_streak_bonuses + $3,
-                             updated_at = NOW()
-                         WHERE user_id = $4`,
-                        [newStreak, today, streakBonus, userId]
-                    );
-
-                    if (streakBonus > 0) {
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
-
-                        // ✅ ADD THIS: Log streak activity
-                        // Get next day bonus
-                        const nextDayKey = `streak_day${newStreak + 1}_bonus`;
-                        const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
-                        const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
-                        await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
-
-                        await pool.query(
-                            'UPDATE submissions SET streak_bonus = $1 WHERE id = $2',
-                            [streakBonus, submissionId]
-                        );
+                        const day2Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day2_bonus']);
+                        const day2Bonus = parseInt(day2Settings.rows[0]?.setting_value) || 0;
+                        await logStreakActivity(pool, userId, 1, day1Bonus, day2Bonus);
 
                         await pool.query(
                             'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                            [userId, `🔥 ${newStreak} day streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                            [userId, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
                         );
                     }
-                }
-            }
-        } catch (error) {
-            console.error('Streak update error:', error);
-        }
+                } else {
+                    const lastShareDate = streak.rows[0].last_share_date
+                        ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
+                        : null;
+                    const currentStreak = streak.rows[0].current_streak;
 
-        // 2. CHECK MILESTONES
-        try {
-            const totalShares = await pool.query(
-                `SELECT COUNT(DISTINCT recipient_number_hash) as total
-                 FROM user_recipients ur
-                 JOIN submissions s ON ur.submission_id = s.id
-                 WHERE s.user_id = $1 AND s.status = 'active'`,
-                [userId]
-            );
+                    if (lastShareDate !== today) {
+                        const yesterday = new Date();
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-            const shareCount = parseInt(totalShares.rows[0].total) || 0;
+                        let newStreak = lastShareDate === yesterdayStr ? currentStreak + 1 : 1;
+                        let settingKey = newStreak <= 7 ? `streak_day${newStreak}_bonus` : (newStreak % 30 === 0 ? 'streak_30day_bonus' : '');
 
-            const milestones = await pool.query(
-                `SELECT * FROM settings 
-                 WHERE setting_key LIKE 'milestone_%' 
-                 ORDER BY setting_key`
-            );
+                        if (settingKey) {
+                            const bonusSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [settingKey]);
+                            streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
+                        }
 
-            const milestonesObj = {};
-            milestones.rows.forEach(m => {
-                const shares = m.setting_key.replace('milestone_', ''); // ✅ Just remove 'milestone_'
-                milestonesObj[shares] = parseInt(m.setting_value);
-            });
-
-            for (const [shares, bonus] of Object.entries(milestonesObj)) {
-                const milestoneShares = parseInt(shares);
-
-                if (shareCount >= milestoneShares) {
-                    const exists = await pool.query(
-                        'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
-                        [userId, 'shares', milestoneShares]
-                    );
-
-                    if (exists.rows.length === 0) {
                         await pool.query(
-                            'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
-                            [userId, 'shares', milestoneShares, bonus]
+                            `UPDATE user_streaks 
+                             SET current_streak = $1, longest_streak = GREATEST(longest_streak, $1),
+                                 last_share_date = $2, total_streak_bonuses = total_streak_bonuses + $3, updated_at = NOW()
+                             WHERE user_id = $4`,
+                            [newStreak, today, streakBonus, userId]
                         );
 
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                        if (streakBonus > 0) {
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
 
-                        // ✅ ADD THIS: Log milestone activity
-                        // Get total shares and next milestone
-                        const userShares = await pool.query('SELECT COUNT(*) as total FROM submissions WHERE user_id = $1', [userId]);
-                        const totalShares = parseInt(userShares.rows[0].total);
+                            const nextDayKey = `streak_day${newStreak + 1}_bonus`;
+                            const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+                            const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
+                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
 
-                        // Find next milestone
-                        const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
-                        const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
-
-                        await logMilestoneActivity(pool, userId, milestoneShares, bonus, totalShares, nextMilestone);
+                            await pool.query(
+                                'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                                [userId, `🔥 ${newStreak} day streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                            );
+                        }
                     }
                 }
+            } catch (error) {
+                console.error('Streak update error:', error);
             }
-        } catch (error) {
-            console.error('Milestone check error:', error);
-        }
 
-        // 3. AWARD REFERRAL COMMISSION
-        try {
-            const user = await pool.query('SELECT referred_by_code FROM users WHERE id = $1', [userId]);
-
-            if (user.rows[0].referred_by_code) {
-                const referrer = await pool.query(
-                    'SELECT id FROM users WHERE referral_code = $1',
-                    [user.rows[0].referred_by_code]
+            // 2. CHECK MILESTONES
+            try {
+                const totalShares = await pool.query(
+                    `SELECT COUNT(*) as total FROM personal_share_submissions 
+                     WHERE user_id = $1 AND status = 'approved'`,
+                    [userId]
                 );
 
-                if (referrer.rows.length > 0) {
-                    const commissionSettings = await pool.query(
-                        'SELECT setting_value FROM settings WHERE setting_key = $1',
-                        ['referral_commission_percent']
-                    );
+                const shareCount = parseInt(totalShares.rows[0].total) || 0;
+                const milestones = await pool.query(`SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key`);
 
-                    const commissionPercent = parseInt(commissionSettings.rows[0].setting_value) || 10;
-                    const commission = Math.floor(numbers.length * commissionPercent / 100);
+                const milestonesObj = {};
+                milestones.rows.forEach(m => {
+                    const shares = m.setting_key.replace('milestone_', '');
+                    milestonesObj[shares] = parseInt(m.setting_value);
+                });
 
-                    if (commission > 0) {
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+                for (const [shares, bonus] of Object.entries(milestonesObj)) {
+                    const milestoneShares = parseInt(shares);
 
-                        // ✅ ADD THIS HERE
-                        const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
-                        await logCommissionActivity(pool, referrer.rows[0].id, referredUser.rows[0].whatsapp_number, commission, commissionPercent, numbers.length, userId);
-
-                        await pool.query(
-                            'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
-                            [commission, referrer.rows[0].id, userId]
+                    if (shareCount >= milestoneShares) {
+                        const exists = await pool.query(
+                            'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
+                            [userId, 'shares', milestoneShares]
                         );
+
+                        if (exists.rows.length === 0) {
+                            await pool.query(
+                                'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
+                                [userId, 'shares', milestoneShares, bonus]
+                            );
+
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+
+                            const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
+                            const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
+                            await logMilestoneActivity(pool, userId, milestoneShares, bonus, shareCount, nextMilestone);
+                        }
                     }
                 }
+            } catch (error) {
+                console.error('Milestone check error:', error);
             }
-        } catch (error) {
-            console.error('Referral commission error:', error);
-        }
 
-        // 4. AWARD BONUS SPIN (every X shares) - FIXED VERSION
-        try {
-            const spinSettings = await pool.query(
-                'SELECT setting_value FROM settings WHERE setting_key = $1',
-                ['spin_per_shares']
-            );
+            // 3. AWARD REFERRAL COMMISSION
+            try {
+                const user = await pool.query('SELECT referred_by_code FROM users WHERE id = $1', [userId]);
 
-            const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
+                if (user.rows[0].referred_by_code) {
+                    const referrer = await pool.query('SELECT id FROM users WHERE referral_code = $1', [user.rows[0].referred_by_code]);
 
-            const totalShares = await pool.query(
-                `SELECT COUNT(DISTINCT recipient_number_hash) as total
-                 FROM user_recipients ur
-                 JOIN submissions s ON ur.submission_id = s.id
-                 WHERE s.user_id = $1 AND s.status = 'active'`,
-                [userId]
-            );
+                    if (referrer.rows.length > 0) {
+                        const commissionSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['referral_commission_percent']);
+                        const commissionPercent = parseInt(commissionSettings.rows[0].setting_value) || 10;
+                        const commission = Math.floor(pointsToAward * commissionPercent / 100);
 
-            const shareCount = parseInt(totalShares.rows[0].total) || 0;
+                        if (commission > 0) {
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
 
-            console.log(`📊 User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} for bonus spin`);
+                            const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
+                            await logCommissionActivity(pool, referrer.rows[0].id, referredUser.rows[0].whatsapp_number, commission, commissionPercent, pointsToAward, userId);
 
-            // Award bonus spin for every X shares
-            if (shareCount > 0 && shareCount % sharesNeeded === 0) {
-                let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
-
-                if (userSpins.rows.length === 0) {
-                    await pool.query(
-                        'INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)',
-                        [userId]
-                    );
-                } else {
-                    await pool.query(
-                        'UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1',
-                        [userId]
-                    );
+                            await pool.query(
+                                'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
+                                [commission, referrer.rows[0].id, userId]
+                            );
+                        }
+                    }
                 }
-
-                console.log(`🎉 Awarded bonus spin to user ${userId}!`);
+            } catch (error) {
+                console.error('Referral commission error:', error);
             }
-        } catch (error) {
-            console.error('Bonus spin award error:', error);
+
+            // 4. AWARD BONUS SPIN
+            try {
+                const spinSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_per_shares']);
+                const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
+
+                const totalShares = await pool.query(
+                    `SELECT COUNT(*) as total FROM personal_share_submissions WHERE user_id = $1 AND status = 'approved'`,
+                    [userId]
+                );
+
+                const shareCount = parseInt(totalShares.rows[0].total) || 0;
+
+                if (shareCount > 0 && shareCount % sharesNeeded === 0) {
+                    let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
+
+                    if (userSpins.rows.length === 0) {
+                        await pool.query('INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)', [userId]);
+                    } else {
+                        await pool.query('UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1', [userId]);
+                    }
+
+                    console.log(`🎉 Awarded bonus spin to user ${userId}!`);
+                }
+            } catch (error) {
+                console.error('Bonus spin award error:', error);
+            }
         }
 
-        // Store recipient mappings with both hash and actual number
+        // Store recipient mappings (always, even if pending)
         for (let i = 0; i < hashedNumbers.length; i++) {
             await pool.query(
                 `INSERT INTO user_recipients (user_id, recipient_number_hash, recipient_number, submission_id) 
@@ -1082,10 +1031,11 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         res.json({
             success: true,
             submissionId: submissionId,
-            pointsAwarded: numbers.length,
+            pointsAwarded: pointsToAward,
             streakBonus: streakBonus || 0,
-            totalEarned: numbers.length + (streakBonus || 0),
-            message: 'Submission successful!'
+            totalEarned: pointsToAward + (streakBonus || 0),
+            message: status === 'pending' ? 'Submission pending review' : 'Submission successful!',
+            status: status
         });
 
     } catch (error) {
@@ -1093,8 +1043,6 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         res.status(500).json({ error: 'Submission failed' });
     }
 });
-
-
 
 
 // Request redemption
