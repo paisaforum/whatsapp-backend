@@ -3804,51 +3804,6 @@ router.get('/admin/personal-share/submissions/user/:userId', authenticateAdmin, 
     }
 });
 
-// Review Personal Share Submission
-router.post('/admin/personal-share/review-submission', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { submissionId, action, adminNotes } = req.body;
-
-        // Get submission and settings
-        const submission = await pool.query('SELECT * FROM personal_share_submissions WHERE id = $1', [submissionId]);
-        if (submission.rows.length === 0) {
-            return res.status(404).json({ error: 'Submission not found' });
-        }
-
-        const settings = await pool.query('SELECT * FROM personal_share_settings ORDER BY id DESC LIMIT 1');
-        const pointsPerSubmission = settings.rows[0]?.points_per_submission || 5;
-
-        const status = action === 'approve' ? 'approved' : 'rejected';
-        const pointsAwarded = action === 'approve' ? pointsPerSubmission : 0;
-
-        // Update submission
-        await pool.query(`
-            UPDATE personal_share_submissions 
-            SET status = $1, admin_notes = $2, points_awarded = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $5
-        `, [status, adminNotes, pointsAwarded, req.admin.adminId, submissionId]);
-
-        // Award points if approved
-        if (action === 'approve') {
-            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsAwarded, submission.rows[0].user_id]);
-
-            // Log transaction
-            await pool.query(`
-                INSERT INTO point_transactions (user_id, amount, transaction_type, description)
-                VALUES ($1, $2, 'personal_share_approved', $3)
-            `, [submission.rows[0].user_id, pointsAwarded, `Personal share submission approved - ${pointsAwarded} points`]);
-        }
-
-        await logAdminActivity(pool, req.admin.adminId, 'review_personal_share', `${action} submission #${submissionId}`);
-
-        res.json({ message: `Submission ${action}d successfully` });
-    } catch (error) {
-        console.error('Error reviewing submission:', error);
-        res.status(500).json({ error: 'Failed to review submission' });
-    }
-});
-
 // Get Personal Share Statistics
 router.get('/admin/personal-share/stats', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
     try {
@@ -7665,12 +7620,14 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
 
         const finalPointsAwarded = action === 'approve' ? pointsPerSubmission : 0;
 
+        // Update submission
         await pool.query(`
             UPDATE personal_share_submissions 
             SET status = $1, admin_notes = $2, points_awarded = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             WHERE id = $5
         `, [status, adminNotes, finalPointsAwarded, req.admin.adminId, submissionId]);
 
+        // Apply points change
         if (pointsChange !== 0) {
             await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsChange, sub.user_id]);
 
@@ -7684,6 +7641,30 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
             `, [sub.user_id, pointsChange, action === 'approve' ? 'personal_share_approved' : 'personal_share_rejected', description]);
         }
 
+        // ✅ Log user activity
+        if (action === 'approve') {
+            // Parse submission data to get recipient count
+            try {
+                const data = JSON.parse(sub.recipient_numbers || '{}');
+                const recipientCount = data.recipients?.length || 0;
+                await logPersonalShareActivity(pool, sub.user_id, recipientCount, finalPointsAwarded, 'offer');
+            } catch (e) {
+                console.error('Error parsing recipient data for activity log:', e);
+            }
+        } else if (action === 'reject') {
+            // Log rejection in activity
+            const shortReason = adminNotes.length > 30 ? adminNotes.substring(0, 30) + '...' : adminNotes;
+            await logActivity(
+                pool,
+                sub.user_id,
+                'personal_share',
+                'Submission Rejected',
+                `Personal share submission rejected: ${shortReason}`,
+                0,
+                { status: 'rejected', reason: adminNotes }
+            );
+        }
+
         await logAdminActivity(pool, req.admin.adminId, 'review_personal_share', `${action} submission #${submissionId}`);
 
         res.json({ message: `Submission ${action}d successfully` });
@@ -7692,6 +7673,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
         res.status(500).json({ error: 'Failed to review submission' });
     }
 });
+
 
 // Get Personal Share Statistics
 router.get('/admin/personal-share/stats', authenticateAdmin, checkPermission('manage_personal_share'), async (req, res) => {
