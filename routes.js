@@ -6369,8 +6369,8 @@ router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmi
                 COUNT(*) FILTER (WHERE status = 'completed') as completed,
                 COUNT(*) FILTER (WHERE status = 'blocked') as blocked,
                 COUNT(*) FILTER (WHERE times_assigned = 0) as fresh,
-                COUNT(*) FILTER (WHERE times_assigned = 1 AND status = 'completed') as assigned_once,
-                COUNT(*) FILTER (WHERE times_assigned = 2 AND status = 'completed') as assigned_twice,
+                COUNT(*) FILTER (WHERE times_assigned = 1) as assigned_once,
+                COUNT(*) FILTER (WHERE times_assigned = 2) as assigned_twice,
                 COUNT(*) FILTER (WHERE times_assigned >= 3) as maxed_out
              FROM leads 
              WHERE campaign_id = $1`,
