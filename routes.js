@@ -655,22 +655,73 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
         const availablePoints = userPoints - redeemedPoints;
 
-        // Get total submission count
-        const submissionCountResult = await pool.query(
-            'SELECT COUNT(*) as total FROM submissions WHERE user_id = $1',
+        // Get paginated submissions
+        // NEW CODE - Fetch BOTH old and new submissions
+        // Get OLD system submissions
+        const oldSubmissions = await pool.query(
+            `SELECT 
+        s.id,
+        s.user_id,
+        s.status,
+        s.points_awarded,
+        s.streak_bonus,
+        s.created_at,
+        COUNT(DISTINCT ur.recipient_number) as recipient_count,
+        'old' as submission_type
+     FROM submissions s
+     LEFT JOIN user_recipients ur ON s.id = ur.submission_id
+     WHERE s.user_id = $1
+     GROUP BY s.id
+     ORDER BY s.created_at DESC`,
             [userId]
         );
-        const totalSubmissions = parseInt(submissionCountResult.rows[0].total);
 
-        // Get paginated submissions
-        const submissionsOffset = (submissionsPage - 1) * limit;
-        const submissions = await pool.query(
-            `SELECT * FROM submissions 
-             WHERE user_id = $1 
-             ORDER BY created_at DESC 
-             LIMIT $2 OFFSET $3`,
-            [userId, limit, submissionsOffset]
+        // Get NEW system submissions  
+        const newSubmissions = await pool.query(
+            `SELECT 
+        id,
+        user_id,
+        status,
+        points_awarded,
+        0 as streak_bonus,
+        created_at,
+        'new' as submission_type,
+        recipient_numbers
+     FROM personal_share_submissions
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+            [userId]
         );
+
+        // Parse NEW submissions to add recipient_count
+        const parsedNewSubmissions = newSubmissions.rows.map(sub => {
+            let recipientCount = 0;
+            try {
+                const data = JSON.parse(sub.recipient_numbers || '{}');
+                recipientCount = data.recipients?.length || 0;
+            } catch (e) {
+                console.error('Error parsing submission:', e);
+            }
+            return {
+                ...sub,
+                recipient_count: recipientCount
+            };
+        });
+
+        // Combine and sort by date
+        const allSubmissions = [
+            ...oldSubmissions.rows,
+            ...parsedNewSubmissions
+        ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        // Apply pagination
+        const totalSubmissions = allSubmissions.length;
+        const paginatedSubmissions = allSubmissions.slice(
+            submissionsOffset,
+            submissionsOffset + limit
+        );
+
+
 
         // Get total redemption count
         const redemptionCountResult = await pool.query(
@@ -795,7 +846,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 globalTasks: globalTaskCount
             },
 
-            submissions: submissions.rows,
+            // NEW:
+            submissions: paginatedSubmissions,
             submissionsPagination: {
                 total: totalSubmissions,
                 page: parseInt(submissionsPage),
