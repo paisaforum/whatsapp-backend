@@ -792,18 +792,33 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         // Hash recipient numbers and check for duplicates
         const hashedNumbers = numbers.map(num => hashPhoneNumber(num));
 
+        // Check duplicates in NEW personal_share_submissions table
         const duplicateCheck = await pool.query(
-            `SELECT recipient_number_hash FROM user_recipients 
-             WHERE user_id = $1 AND recipient_number_hash = ANY($2)`,
-            [userId, hashedNumbers]
+            `SELECT id FROM personal_share_submissions 
+     WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
         );
 
-        if (duplicateCheck.rows.length > 0) {
+        // Parse all recipient numbers from approved submissions
+        const existingRecipients = new Set();
+        for (const sub of duplicateCheck.rows) {
+            try {
+                const data = JSON.parse(sub.recipient_numbers || '{}');
+                if (data.recipients) {
+                    data.recipients.forEach(num => {
+                        existingRecipients.add(hashPhoneNumber(num));
+                    });
+                }
+            } catch (e) { }
+        }
+
+        // Check if any new numbers are duplicates
+        const duplicateNumbers = hashedNumbers.filter(hash => existingRecipients.has(hash));
+        if (duplicateNumbers.length > 0) {
             return res.status(400).json({
                 error: 'You have already submitted shares to some of these recipients'
             });
         }
-
         // Store screenshot paths
         const screenshotPaths = screenshots.map(file => `/uploads/submissions/${file.filename}`);
 
@@ -1019,14 +1034,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             }
         }
 
-        // Store recipient mappings (always, even if pending)
-        for (let i = 0; i < hashedNumbers.length; i++) {
-            await pool.query(
-                `INSERT INTO user_recipients (user_id, recipient_number_hash, recipient_number, submission_id) 
-                 VALUES ($1, $2, $3, $4)`,
-                [userId, hashedNumbers[i], numbers[i], submissionId]
-            );
-        }
+        // Store recipient mappings - NOT NEEDED for new system (data is in JSON)
+        // Recipients are already stored in personal_share_submissions.recipient_numbers as JSON
+        // We keep user_recipients table only for OLD submissions compatibility
 
         res.json({
             success: true,
