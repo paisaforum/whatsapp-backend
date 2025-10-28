@@ -619,7 +619,6 @@ router.post('/login', async (req, res) => {
 });
 
 
-// Get user dashboard data (with pagination)
 router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
     const { userId } = req.params;
     const { submissionsPage = 1, redemptionsPage = 1, limit = 5 } = req.query;
@@ -627,7 +626,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // Get user info - FIXED: Added created_at
+        // Get user info
         const user = await pool.query(
             'SELECT id, whatsapp_number, points, referral_code, created_at FROM users WHERE id = $1',
             [userId]
@@ -642,7 +641,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             'SELECT * FROM offers WHERE is_active = true ORDER BY created_at DESC LIMIT 1'
         );
 
-        // Get user's current points from users table (source of truth)
+        // Get user's current points from users table
         const userPoints = user.rows[0].points;
 
         // Get redeemed points
@@ -728,6 +727,55 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
+        // ============================================
+        // 🆕 NEW: COUNT PERSONAL SHARES (OLD + NEW)
+        // ============================================
+
+        // Count OLD personal shares (from user_recipients table)
+        const oldPersonalShares = await pool.query(
+            `SELECT COUNT(DISTINCT recipient_number) as total
+             FROM user_recipients ur
+             JOIN submissions s ON ur.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'`,
+            [userId]
+        );
+
+        // Count NEW personal shares (from personal_share_submissions JSON)
+        const newPersonalShares = await pool.query(
+            `SELECT recipient_numbers FROM personal_share_submissions 
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        // Parse JSON and count recipients
+        let newPersonalCount = 0;
+        for (const row of newPersonalShares.rows) {
+            try {
+                const data = JSON.parse(row.recipient_numbers || '{}');
+                newPersonalCount += data.recipients?.length || 0;
+            } catch (e) {
+                console.error('Error parsing recipient data:', e);
+            }
+        }
+
+        // Count global task shares
+        const globalTaskShares = await pool.query(
+            `SELECT COUNT(*) as total FROM user_lead_assignments 
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        const oldPersonalCount = parseInt(oldPersonalShares.rows[0].total) || 0;
+        const globalTaskCount = parseInt(globalTaskShares.rows[0].total) || 0;
+        const totalPersonalShares = oldPersonalCount + newPersonalCount;
+        const totalShares = totalPersonalShares + globalTaskCount;
+
+        console.log(`📊 Dashboard - User ${userId}: Old Personal=${oldPersonalCount}, New Personal=${newPersonalCount}, Global=${globalTaskCount}, Total=${totalShares}`);
+
+        // ============================================
+        // END NEW CODE
+        // ============================================
+
         res.json({
             user: user.rows[0],
             offer: offer.rows[0] || null,
@@ -736,6 +784,17 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
                 redeemed: redeemedPoints,
                 available: availablePoints
             },
+
+            // 🆕 NEW: Share counts
+            personalShares: totalPersonalShares,
+            globalTaskShares: globalTaskCount,
+            totalShares: totalShares,
+            shareBreakdown: {
+                oldPersonal: oldPersonalCount,
+                newPersonal: newPersonalCount,
+                globalTasks: globalTaskCount
+            },
+
             submissions: submissions.rows,
             submissionsPagination: {
                 total: totalSubmissions,
@@ -762,6 +821,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to load dashboard' });
     }
 });
+
+
 
 
 // Submit proof endpoint (NEW SYSTEM with settings + duplicate check across old/new)
