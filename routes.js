@@ -655,6 +655,8 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         const redeemedPoints = parseInt(redeemedResult.rows[0].redeemed_points);
         const availablePoints = userPoints - redeemedPoints;
 
+        const submissionsOffset = (submissionsPage - 1) * limit;
+
         // Get paginated submissions
         // NEW CODE - Fetch BOTH old and new submissions
         // Get OLD system submissions
