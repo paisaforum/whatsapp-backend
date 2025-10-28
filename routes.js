@@ -6152,6 +6152,97 @@ router.post('/admin/campaigns/:id/upload-leads-file', authenticateAdmin, uploadL
     }
 });
 
+router.get('/admin/global-task/submissions/users', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { status } = req.query;
+
+        // Build the query to group submissions by user
+        let query = `
+            SELECT 
+                u.id as user_id,
+                u.whatsapp_number,
+                COUNT(ls.id) as total_submissions,
+                COUNT(ls.id) FILTER (WHERE ls.status = 'pending') as pending_count,
+                COUNT(ls.id) FILTER (WHERE ls.status = 'approved') as approved_count,
+                COUNT(ls.id) FILTER (WHERE ls.status = 'rejected') as rejected_count,
+                MAX(ls.created_at) as last_submission
+            FROM users u
+            INNER JOIN lead_submissions ls ON u.id = ls.user_id
+        `;
+
+        const params = [];
+
+        // Filter by status if provided
+        if (status && status !== 'all') {
+            query += ` WHERE ls.status = $1`;
+            params.push(status);
+        }
+
+        query += ` 
+            GROUP BY u.id, u.whatsapp_number
+            ORDER BY last_submission DESC
+        `;
+
+        const result = await pool.query(query, params);
+
+        res.json({ users: result.rows });
+    } catch (error) {
+        console.error('Error fetching users with submissions:', error);
+        res.status(500).json({ error: 'Failed to fetch users' });
+    }
+});
+
+// 2. Get all submissions for a specific user
+router.get('/admin/global-task/submissions/user/:userId', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+        const { status } = req.query;
+
+        let query = `
+            SELECT 
+                ls.id,
+                ls.assignment_id,
+                ls.user_id,
+                ls.lead_id,
+                ls.campaign_id,
+                ls.screenshot_url,
+                ls.additional_notes,
+                ls.status,
+                ls.created_at,
+                ls.reviewed_at,
+                ls.admin_notes,
+                l.phone_number as lead_phone,
+                c.title as campaign_title,
+                ula.points_awarded
+            FROM lead_submissions ls
+            JOIN leads l ON ls.lead_id = l.id
+            JOIN campaigns c ON ls.campaign_id = c.id
+            JOIN user_lead_assignments ula ON ls.assignment_id = ula.id
+            WHERE ls.user_id = $1
+        `;
+
+        const params = [userId];
+
+        // Filter by status if provided and not 'all'
+        if (status && status !== 'all') {
+            query += ` AND ls.status = $2`;
+            params.push(status);
+        }
+
+        query += ` ORDER BY ls.created_at DESC`;
+
+        const result = await pool.query(query, params);
+
+        res.json({ submissions: result.rows });
+    } catch (error) {
+        console.error('Error fetching user submissions:', error);
+        res.status(500).json({ error: 'Failed to fetch submissions' });
+    }
+});
+
+
 router.get('/admin/lead-submissions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -6383,6 +6474,8 @@ router.get('/admin/campaigns/:campaignId/leads-stats-detailed', authenticateAdmi
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });
+
+
 
 
 // Review lead submission (approve/reject)
