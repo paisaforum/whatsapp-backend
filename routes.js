@@ -762,7 +762,9 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to load dashboard' });
     }
 });
-// Submit proof endpoint (ENHANCED with settings)
+
+
+// Submit proof endpoint (NEW SYSTEM with settings + duplicate check across old/new)
 router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
@@ -789,19 +791,27 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             return res.status(400).json({ error: 'Number of screenshots must match recipient count' });
         }
 
-        // Hash recipient numbers and check for duplicates
+        // Hash recipient numbers
         const hashedNumbers = numbers.map(num => hashPhoneNumber(num));
 
-        // Check duplicates in NEW personal_share_submissions table
-        const duplicateCheck = await pool.query(
-            `SELECT id FROM personal_share_submissions 
-     WHERE user_id = $1 AND status = 'approved'`,
+        // ✅ CHECK DUPLICATES IN BOTH OLD AND NEW SYSTEMS
+        // Check OLD system (user_recipients table)
+        const oldDuplicates = await pool.query(
+            `SELECT recipient_number_hash FROM user_recipients 
+             WHERE user_id = $1 AND recipient_number_hash = ANY($2)`,
+            [userId, hashedNumbers]
+        );
+
+        // Check NEW system (personal_share_submissions JSON)
+        const newSubmissions = await pool.query(
+            `SELECT recipient_numbers FROM personal_share_submissions 
+             WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
-        // Parse all recipient numbers from approved submissions
+        // Collect all existing recipient hashes from new system
         const existingRecipients = new Set();
-        for (const sub of duplicateCheck.rows) {
+        for (const sub of newSubmissions.rows) {
             try {
                 const data = JSON.parse(sub.recipient_numbers || '{}');
                 if (data.recipients) {
@@ -812,13 +822,17 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             } catch (e) { }
         }
 
-        // Check if any new numbers are duplicates
-        const duplicateNumbers = hashedNumbers.filter(hash => existingRecipients.has(hash));
+        // Check if any new numbers are duplicates in EITHER system
+        const duplicateNumbers = hashedNumbers.filter(hash =>
+            existingRecipients.has(hash) || oldDuplicates.rows.some(row => row.recipient_number_hash === hash)
+        );
+
         if (duplicateNumbers.length > 0) {
             return res.status(400).json({
                 error: 'You have already submitted shares to some of these recipients'
             });
         }
+
         // Store screenshot paths
         const screenshotPaths = screenshots.map(file => `/uploads/submissions/${file.filename}`);
 
@@ -933,33 +947,50 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                 console.error('Streak update error:', error);
             }
 
-
-
-
-
-            // 2. CHECK MILESTONES
+            // 2. CHECK MILESTONES (count from BOTH old and new systems + global tasks)
             try {
-                // Count total RECIPIENTS shared to, not submissions
-                const totalShares = await pool.query(
-                    `SELECT ps.recipient_numbers
-         FROM personal_share_submissions ps
-         WHERE ps.user_id = $1 AND ps.status = 'approved'`,
+                // Count OLD personal shares
+                const oldShares = await pool.query(
+                    `SELECT COUNT(DISTINCT recipient_number) as total
+                     FROM user_recipients ur
+                     JOIN submissions s ON ur.submission_id = s.id
+                     WHERE s.user_id = $1 AND s.status = 'active'`,
                     [userId]
                 );
 
-                // Count all unique recipients
-                let shareCount = 0;
-                for (const row of totalShares.rows) {
+                // Count NEW personal shares
+                const newShares = await pool.query(
+                    `SELECT recipient_numbers FROM personal_share_submissions 
+                     WHERE user_id = $1 AND status = 'approved'`,
+                    [userId]
+                );
+
+                let newShareCount = 0;
+                for (const row of newShares.rows) {
                     try {
                         const data = JSON.parse(row.recipient_numbers || '{}');
-                        shareCount += data.recipients?.length || 0;
+                        newShareCount += data.recipients?.length || 0;
                     } catch (e) { }
                 }
+
+                // Count global tasks
+                const globalTasks = await pool.query(
+                    `SELECT COUNT(*) as total FROM user_lead_assignments 
+                     WHERE user_id = $1 AND status = 'approved'`,
+                    [userId]
+                );
+
+                const oldShareCount = parseInt(oldShares.rows[0].total) || 0;
+                const globalCount = parseInt(globalTasks.rows[0].total) || 0;
+                const shareCount = oldShareCount + newShareCount + globalCount;
+
+                console.log(`📊 Milestone Check - User ${userId}: Old=${oldShareCount}, New=${newShareCount}, Global=${globalCount}, Total=${shareCount}`);
+
                 const milestones = await pool.query(`SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key`);
 
                 const milestonesObj = {};
                 milestones.rows.forEach(m => {
-                    const shares = m.setting_key.replace('milestone_', '');
+                    const shares = m.setting_key.replace('milestone_', '').replace('_shares', '');
                     milestonesObj[shares] = parseInt(m.setting_value);
                 });
 
@@ -983,6 +1014,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                             const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                             const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
                             await logMilestoneActivity(pool, userId, milestoneShares, bonus, shareCount, nextMilestone);
+
+                            console.log(`🏆 Milestone ${milestoneShares} achieved! Awarded ${bonus} points to user ${userId}`);
                         }
                     }
                 }
@@ -1012,6 +1045,8 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                                 'UPDATE referrals SET total_commission_earned = total_commission_earned + $1 WHERE referrer_id = $2 AND referred_id = $3',
                                 [commission, referrer.rows[0].id, userId]
                             );
+
+                            console.log(`💰 Commission ${commission} awarded to referrer ${referrer.rows[0].id}`);
                         }
                     }
                 }
@@ -1019,17 +1054,37 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                 console.error('Referral commission error:', error);
             }
 
-            // 4. AWARD BONUS SPIN
+            // 4. AWARD BONUS SPIN (count from BOTH systems)
             try {
                 const spinSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_per_shares']);
                 const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
 
-                const totalShares = await pool.query(
-                    `SELECT COUNT(*) as total FROM personal_share_submissions WHERE user_id = $1 AND status = 'approved'`,
+                // Count total shares from both systems
+                const oldSpinShares = await pool.query(
+                    `SELECT COUNT(DISTINCT recipient_number) as total
+                     FROM user_recipients ur
+                     JOIN submissions s ON ur.submission_id = s.id
+                     WHERE s.user_id = $1 AND s.status = 'active'`,
                     [userId]
                 );
 
-                const shareCount = parseInt(totalShares.rows[0].total) || 0;
+                const newSpinShares = await pool.query(
+                    `SELECT recipient_numbers FROM personal_share_submissions 
+                     WHERE user_id = $1 AND status = 'approved'`,
+                    [userId]
+                );
+
+                let newSpinCount = 0;
+                for (const row of newSpinShares.rows) {
+                    try {
+                        const data = JSON.parse(row.recipient_numbers || '{}');
+                        newSpinCount += data.recipients?.length || 0;
+                    } catch (e) { }
+                }
+
+                const shareCount = (parseInt(oldSpinShares.rows[0].total) || 0) + newSpinCount;
+
+                console.log(`🎰 Spin Check - User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} per spin`);
 
                 if (shareCount > 0 && shareCount % sharesNeeded === 0) {
                     let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
@@ -1047,10 +1102,6 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             }
         }
 
-        // Store recipient mappings - NOT NEEDED for new system (data is in JSON)
-        // Recipients are already stored in personal_share_submissions.recipient_numbers as JSON
-        // We keep user_recipients table only for OLD submissions compatibility
-
         res.json({
             success: true,
             submissionId: submissionId,
@@ -1066,6 +1117,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
         res.status(500).json({ error: 'Submission failed' });
     }
 });
+
 
 
 // Get user profile data
