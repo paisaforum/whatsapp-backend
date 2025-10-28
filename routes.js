@@ -3062,25 +3062,89 @@ router.delete('/admin/delete-offer/:offerId', authenticateAdmin, checkPermission
 
 // Get all recipient numbers for a user
 router.get('/user-recipients/:userId', authenticateUser, async (req, res) => {
-    const { userId } = req.params;
-
     try {
         const pool = req.app.get('db');
+        const { userId } = req.params;
 
-        const recipients = await pool.query(
-            `SELECT DISTINCT ON (recipient_number) 
-              recipient_number, 
-              MIN(created_at) as first_shared
-       FROM user_recipients
-       WHERE user_id = $1 AND recipient_number IS NOT NULL
-       GROUP BY recipient_number
-       ORDER BY recipient_number, first_shared DESC`,
+        // ✅ Get recipients from OLD system (user_recipients table)
+        const oldRecipients = await pool.query(
+            `SELECT DISTINCT
+                ur.recipient_number,
+                s.created_at,
+                'old' as source
+             FROM user_recipients ur
+             JOIN submissions s ON ur.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'
+             ORDER BY s.created_at DESC`,
             [userId]
         );
 
-        res.json({ recipients: recipients.rows });
+        // ✅ Get recipients from NEW system (personal_share_submissions JSON)
+        const newSubmissions = await pool.query(
+            `SELECT 
+                recipient_numbers,
+                created_at,
+                status
+             FROM personal_share_submissions
+             WHERE user_id = $1 AND status = 'approved'
+             ORDER BY created_at DESC`,
+            [userId]
+        );
+
+        // Parse NEW system recipients from JSON
+        const newRecipients = [];
+        for (const sub of newSubmissions.rows) {
+            try {
+                const data = JSON.parse(sub.recipient_numbers || '{}');
+                const recipients = data.recipients || [];
+
+                recipients.forEach(number => {
+                    newRecipients.push({
+                        recipient_number: number,
+                        created_at: sub.created_at,
+                        source: 'new'
+                    });
+                });
+            } catch (e) {
+                console.error('Error parsing recipient numbers:', e);
+            }
+        }
+
+        // ✅ Combine all recipients
+        const allRecipients = [
+            ...oldRecipients.rows,
+            ...newRecipients
+        ];
+
+        // ✅ Remove duplicates (keep latest submission date for each number)
+        const uniqueRecipients = {};
+        allRecipients.forEach(recipient => {
+            const number = recipient.recipient_number;
+
+            // If number doesn't exist OR current date is more recent
+            if (!uniqueRecipients[number] ||
+                new Date(recipient.created_at) > new Date(uniqueRecipients[number].created_at)) {
+                uniqueRecipients[number] = recipient;
+            }
+        });
+
+        // Convert back to array and sort by date (newest first)
+        const recipientsList = Object.values(uniqueRecipients)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        console.log(`📞 User ${userId} Recipients: Old=${oldRecipients.rows.length}, New=${newRecipients.length}, Unique=${recipientsList.length}`);
+
+        res.json({
+            recipients: recipientsList,
+            stats: {
+                total_unique: recipientsList.length,
+                from_old_system: oldRecipients.rows.length,
+                from_new_system: newRecipients.length
+            }
+        });
+
     } catch (error) {
-        console.error('Failed to fetch recipients:', error);
+        console.error('Error fetching user recipients:', error);
         res.status(500).json({ error: 'Failed to fetch recipients' });
     }
 });
