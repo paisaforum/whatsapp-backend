@@ -6436,13 +6436,10 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
 
             // If points not awarded yet, award now
             if (assignment.points_awarded === 0) {
-
-                // ✅ CORRECT - Use campaigns table instead:
                 const pointsRes = await pool.query(
-                    'SELECT points_per_lead FROM campaigns WHERE id = $1',
-                    [submission.campaign_id]
+                    "SELECT setting_value FROM campaign_settings WHERE setting_key = 'points_per_lead'"
                 );
-                const points = parseInt(pointsRes.rows[0]?.points_per_lead) || 1;
+                const points = parseInt(pointsRes.rows[0]?.setting_value) || 1;
 
                 await pool.query(
                     'UPDATE users SET points = points + $1 WHERE id = $2',
