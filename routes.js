@@ -786,7 +786,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
             },
 
             // 🆕 NEW: Share counts
-            personalShares: totalPersonalShares,
+            personalShareCount: totalPersonalShares,  // Changed from personalShares
             globalTaskShares: globalTaskCount,
             totalShares: totalShares,
             shareBreakdown: {
