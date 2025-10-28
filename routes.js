@@ -4524,7 +4524,7 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.body;
 
-        // ✅ UPDATED: Count from OLD system (user_recipients)
+        // ✅ Get OLD personal shares (from user_recipients)
         const oldPersonalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
@@ -4533,7 +4533,7 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ NEW: Count from NEW system (personal_share_submissions JSON)
+        // ✅ Get NEW personal shares (from personal_share_submissions JSON)
         const newPersonalShares = await pool.query(
             `SELECT recipient_numbers
              FROM personal_share_submissions
@@ -4541,15 +4541,15 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // Count unique recipients from new system
-        const uniqueRecipients = new Set();
+        // Count recipients from new system
+        let newPersonalCount = 0;
         for (const row of newPersonalShares.rows) {
             try {
                 const data = JSON.parse(row.recipient_numbers || '{}');
-                if (data.recipients) {
-                    data.recipients.forEach(num => uniqueRecipients.add(num));
-                }
-            } catch (e) { }
+                newPersonalCount += data.recipients?.length || 0;
+            } catch (e) {
+                console.error('Error parsing recipient data:', e);
+            }
         }
 
         // ✅ Get global task completions
@@ -4560,11 +4560,12 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ UPDATED: Combine all counts
+        // ✅ Combine all counts
         const oldPersonalCount = parseInt(oldPersonalShares.rows[0].total) || 0;
-        const newPersonalCount = uniqueRecipients.size;
         const globalCount = parseInt(globalTasks.rows[0].total) || 0;
         const shareCount = oldPersonalCount + newPersonalCount + globalCount;
+
+        console.log(`📊 User ${userId} Share Breakdown: Old Personal=${oldPersonalCount}, New Personal=${newPersonalCount}, Global=${globalCount}, Total=${shareCount}`);
 
         // Get milestone settings
         const milestones = await pool.query(
@@ -4585,20 +4586,27 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             const milestoneShares = parseInt(shares);
 
             if (shareCount >= milestoneShares) {
+                // Check if already awarded
                 const exists = await pool.query(
                     'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
                     [userId, 'shares', milestoneShares]
                 );
 
                 if (exists.rows.length === 0) {
+                    // Award milestone
                     await pool.query(
                         'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
                         [userId, 'shares', milestoneShares, bonus]
                     );
 
-                    await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                    await pool.query(
+                        'UPDATE users SET points = points + $1 WHERE id = $2',
+                        [bonus, userId]
+                    );
+
                     await logPointTransaction(pool, userId, bonus, 'milestone', `Milestone reward: ${milestoneShares} shares completed`, milestoneShares);
 
+                    // Log milestone activity
                     const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                     const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
                     await logMilestoneActivity(pool, userId, milestoneShares, bonus, shareCount, nextMilestone);
@@ -4623,7 +4631,6 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to check milestones' });
     }
 });
-
 
 // Get user milestones
 router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
