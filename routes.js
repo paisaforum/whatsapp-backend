@@ -4431,8 +4431,8 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.body;
 
-        // ✅ UPDATED: Get total shares INCLUDING global tasks
-        const personalShares = await pool.query(
+        // ✅ UPDATED: Count from OLD system (user_recipients)
+        const oldPersonalShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
@@ -4440,7 +4440,26 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ NEW: Get global task completions
+        // ✅ NEW: Count from NEW system (personal_share_submissions JSON)
+        const newPersonalShares = await pool.query(
+            `SELECT recipient_numbers
+             FROM personal_share_submissions
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        // Count unique recipients from new system
+        const uniqueRecipients = new Set();
+        for (const row of newPersonalShares.rows) {
+            try {
+                const data = JSON.parse(row.recipient_numbers || '{}');
+                if (data.recipients) {
+                    data.recipients.forEach(num => uniqueRecipients.add(num));
+                }
+            } catch (e) { }
+        }
+
+        // ✅ Get global task completions
         const globalTasks = await pool.query(
             `SELECT COUNT(*) as total
              FROM user_lead_assignments
@@ -4448,10 +4467,11 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ UPDATED: Combine both counts
-        const personalCount = parseInt(personalShares.rows[0].total) || 0;
+        // ✅ UPDATED: Combine all counts
+        const oldPersonalCount = parseInt(oldPersonalShares.rows[0].total) || 0;
+        const newPersonalCount = uniqueRecipients.size;
         const globalCount = parseInt(globalTasks.rows[0].total) || 0;
-        const shareCount = personalCount + globalCount;
+        const shareCount = oldPersonalCount + newPersonalCount + globalCount;
 
         // Get milestone settings
         const milestones = await pool.query(
@@ -4472,31 +4492,23 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             const milestoneShares = parseInt(shares);
 
             if (shareCount >= milestoneShares) {
-                // Check if already awarded
                 const exists = await pool.query(
                     'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
                     [userId, 'shares', milestoneShares]
                 );
 
                 if (exists.rows.length === 0) {
-                    // Award milestone
                     await pool.query(
                         'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
                         [userId, 'shares', milestoneShares, bonus]
                     );
 
-                    await pool.query(
-                        'UPDATE users SET points = points + $1 WHERE id = $2',
-                        [bonus, userId]
-                    );
+                    await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
                     await logPointTransaction(pool, userId, bonus, 'milestone', `Milestone reward: ${milestoneShares} shares completed`, milestoneShares);
 
-
-                    // ✅ ADD THIS: Log milestone activity
-                    const totalShares = await pool.query('SELECT COUNT(*) as total FROM submissions WHERE user_id = $1', [userId]);
                     const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                     const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
-                    await logMilestoneActivity(pool, userId, milestoneShares, bonus, parseInt(totalShares.rows[0].total), nextMilestone);
+                    await logMilestoneActivity(pool, userId, milestoneShares, bonus, shareCount, nextMilestone);
 
                     awarded.push({ milestone: milestoneShares, bonus });
                 }
@@ -4508,7 +4520,8 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
             awarded,
             currentShares: shareCount,
             breakdown: {
-                personal: personalCount,
+                oldPersonal: oldPersonalCount,
+                newPersonal: newPersonalCount,
                 globalTasks: globalCount
             }
         });
@@ -4519,20 +4532,14 @@ router.post('/check-milestones', authenticateUser, async (req, res) => {
 });
 
 
-
 // Get user milestones
 router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId } = req.params;
 
-        const milestones = await pool.query(
-            'SELECT * FROM user_milestones WHERE user_id = $1 ORDER BY milestone_value ASC',
-            [userId]
-        );
-
-        // ✅ UPDATED: Get personal share count
-        const personalShares = await pool.query(
+        // Get OLD personal shares count
+        const oldShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
              JOIN submissions s ON sr.submission_id = s.id
@@ -4540,7 +4547,26 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ NEW: Get global task count
+        // Get NEW personal shares count
+        const newShares = await pool.query(
+            `SELECT recipient_numbers
+             FROM personal_share_submissions
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        // Count unique recipients from new system
+        const uniqueRecipients = new Set();
+        for (const row of newShares.rows) {
+            try {
+                const data = JSON.parse(row.recipient_numbers || '{}');
+                if (data.recipients) {
+                    data.recipients.forEach(num => uniqueRecipients.add(num));
+                }
+            } catch (e) {}
+        }
+
+        // Get global tasks
         const globalTasks = await pool.query(
             `SELECT COUNT(*) as total
              FROM user_lead_assignments
@@ -4548,24 +4574,35 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // ✅ UPDATED: Combine counts
-        const personalCount = parseInt(personalShares.rows[0].total) || 0;
+        const oldCount = parseInt(oldShares.rows[0].total) || 0;
+        const newCount = uniqueRecipients.size;
         const globalCount = parseInt(globalTasks.rows[0].total) || 0;
-        const totalShares = personalCount + globalCount;
+        const currentShares = oldCount + newCount + globalCount;
+
+        // Get achieved milestones
+        const milestones = await pool.query(
+            `SELECT * FROM user_milestones 
+             WHERE user_id = $1 AND milestone_type = 'shares'
+             ORDER BY milestone_value ASC`,
+            [userId]
+        );
 
         res.json({
             milestones: milestones.rows,
-            currentShares: totalShares,
+            currentShares,
             breakdown: {
-                personal: personalCount,
+                oldPersonal: oldCount,
+                newPersonal: newCount,
                 globalTasks: globalCount
             }
         });
     } catch (error) {
-        console.error('Error fetching milestones:', error);
+        console.error('Error fetching user milestones:', error);
         res.status(500).json({ error: 'Failed to fetch milestones' });
     }
 });
+
+
 // ==================== ACTIVITIES ROUTES ====================
 
 // Get all active activities (PUBLIC)
