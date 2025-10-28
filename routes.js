@@ -1120,7 +1120,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
 
 
-// Get user profile data
+// Get user profile data (combines old + new systems)
 router.get('/user/:userId', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -1136,43 +1136,37 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // ✅ Get OLD submissions (from submissions table)
-        const oldSubmissions = await pool.query(
-            `SELECT s.*, COUNT(DISTINCT ur.recipient_number) as recipient_count
-             FROM submissions s
-             LEFT JOIN user_recipients ur ON s.id = ur.submission_id
-             WHERE s.user_id = $1 AND s.status = 'active'
-             GROUP BY s.id
-             ORDER BY s.created_at DESC`,
+        // Count OLD personal shares (unique recipients)
+        const oldShares = await pool.query(
+            `SELECT COUNT(DISTINCT recipient_number) as total
+             FROM user_recipients ur
+             JOIN submissions s ON ur.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'`,
             [userId]
         );
 
-        // ✅ Get NEW submissions (from personal_share_submissions table)
-        const newSubmissions = await pool.query(
-            `SELECT id, screenshot_url, recipient_numbers, points_awarded, status, created_at
-             FROM personal_share_submissions
-             WHERE user_id = $1 AND status = 'approved'
-             ORDER BY created_at DESC`,
+        // Count NEW personal shares (recipients from JSON)
+        const newShares = await pool.query(
+            `SELECT recipient_numbers FROM personal_share_submissions 
+             WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
-        // ✅ Parse new submissions and add recipient_count
-        const parsedNewSubmissions = newSubmissions.rows.map(sub => {
+        let newShareCount = 0;
+        const submissions = [];
+        for (const row of newShares.rows) {
             try {
-                const data = JSON.parse(sub.recipient_numbers || '{}');
-                return {
-                    ...sub,
-                    recipient_count: data.recipients?.length || 0,
-                    screenshots: data.screenshots || [],
-                    recipients: data.recipients || []
-                };
+                const data = JSON.parse(row.recipient_numbers || '{}');
+                const recipientCount = data.recipients?.length || 0;
+                newShareCount += recipientCount;
+                submissions.push({ recipient_count: recipientCount });
             } catch (e) {
-                return { ...sub, recipient_count: 0 };
+                console.error('Error parsing submission:', e);
             }
-        });
+        }
 
-        // ✅ Combine both old and new submissions
-        const allSubmissions = [...oldSubmissions.rows, ...parsedNewSubmissions];
+        const oldShareCount = parseInt(oldShares.rows[0].total) || 0;
+        const totalPersonalShares = oldShareCount + newShareCount;
 
         // Get referral stats
         const referralStats = await pool.query(
@@ -1195,9 +1189,17 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
+        console.log(`👤 User ${userId} Profile - Personal Shares: ${totalPersonalShares} (Old: ${oldShareCount}, New: ${newShareCount})`);
+
         res.json({
             user: user.rows[0],
-            submissions: allSubmissions,
+            submissions: submissions,
+            personalShareCount: totalPersonalShares,
+            shareBreakdown: {
+                oldPersonal: oldShareCount,
+                newPersonal: newShareCount,
+                total: totalPersonalShares
+            },
             referralStats: referralStats.rows[0] || { total_referrals: 0, total_commission: 0 },
             streak: streak.rows[0] || { current_streak: 0, longest_streak: 0, last_share_date: null },
             spins: spins.rows[0] || { bonus_spins: 0, free_spins: 0 }
@@ -1208,7 +1210,6 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch user profile' });
     }
 });
-
 
 // Request redemption
 // Request redemption
@@ -4690,7 +4691,7 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.params;
 
-        // Get OLD personal shares count
+        // Get OLD personal shares
         const oldShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients sr
@@ -4699,37 +4700,31 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
-        // Get NEW personal shares count
+        // Get NEW personal shares
         const newShares = await pool.query(
-            `SELECT recipient_numbers
-             FROM personal_share_submissions
+            `SELECT recipient_numbers FROM personal_share_submissions
              WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
-        // Count unique recipients from new system
-        const uniqueRecipients = new Set();
+        let newShareCount = 0;
         for (const row of newShares.rows) {
             try {
                 const data = JSON.parse(row.recipient_numbers || '{}');
-                if (data.recipients) {
-                    data.recipients.forEach(num => uniqueRecipients.add(num));
-                }
+                newShareCount += data.recipients?.length || 0;
             } catch (e) { }
         }
 
         // Get global tasks
         const globalTasks = await pool.query(
-            `SELECT COUNT(*) as total
-             FROM user_lead_assignments
+            `SELECT COUNT(*) as total FROM user_lead_assignments 
              WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
         const oldCount = parseInt(oldShares.rows[0].total) || 0;
-        const newCount = uniqueRecipients.size;
         const globalCount = parseInt(globalTasks.rows[0].total) || 0;
-        const currentShares = oldCount + newCount + globalCount;
+        const currentShares = oldCount + newShareCount + globalCount;
 
         // Get achieved milestones
         const milestones = await pool.query(
@@ -4739,12 +4734,14 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
             [userId]
         );
 
+        console.log(`🏆 Milestones - User ${userId}: Old=${oldCount}, New=${newShareCount}, Global=${globalCount}, Total=${currentShares}`);
+
         res.json({
             milestones: milestones.rows,
-            currentShares,
+            currentShares: currentShares,
             breakdown: {
                 oldPersonal: oldCount,
-                newPersonal: newCount,
+                newPersonal: newShareCount,
                 globalTasks: globalCount
             }
         });
