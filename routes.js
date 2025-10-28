@@ -1126,6 +1126,8 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.params;
 
+        console.log(`🔍 Profile endpoint called for user ${userId}`);
+
         // Get user details
         const user = await pool.query(
             'SELECT id, whatsapp_number, points, referral_code, referred_by_code, created_at FROM users WHERE id = $1',
@@ -1168,6 +1170,8 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
         const oldShareCount = parseInt(oldShares.rows[0].total) || 0;
         const totalPersonalShares = oldShareCount + newShareCount;
 
+        console.log(`👤 User ${userId} Profile - Personal Shares: ${totalPersonalShares} (Old: ${oldShareCount}, New: ${newShareCount})`);
+
         // Get referral stats
         const referralStats = await pool.query(
             `SELECT COUNT(*) as total_referrals, 
@@ -1188,8 +1192,6 @@ router.get('/user/:userId', authenticateUser, async (req, res) => {
             'SELECT bonus_spins, free_spins FROM user_spins WHERE user_id = $1',
             [userId]
         );
-
-        console.log(`👤 User ${userId} Profile - Personal Shares: ${totalPersonalShares} (Old: ${oldShareCount}, New: ${newShareCount})`);
 
         res.json({
             user: user.rows[0],
