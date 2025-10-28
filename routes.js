@@ -934,6 +934,9 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             }
 
 
+
+
+
             // 2. CHECK MILESTONES
             try {
                 // Count total RECIPIENTS shared to, not submissions
@@ -1061,6 +1064,96 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
     } catch (error) {
         console.error('Submission error:', error);
         res.status(500).json({ error: 'Submission failed' });
+    }
+});
+
+
+// Get user profile data
+router.get('/user/:userId', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get user details
+        const user = await pool.query(
+            'SELECT id, whatsapp_number, points, referral_code, referred_by_code, created_at FROM users WHERE id = $1',
+            [userId]
+        );
+
+        if (user.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // ✅ Get OLD submissions (from submissions table)
+        const oldSubmissions = await pool.query(
+            `SELECT s.*, COUNT(DISTINCT ur.recipient_number) as recipient_count
+             FROM submissions s
+             LEFT JOIN user_recipients ur ON s.id = ur.submission_id
+             WHERE s.user_id = $1 AND s.status = 'active'
+             GROUP BY s.id
+             ORDER BY s.created_at DESC`,
+            [userId]
+        );
+
+        // ✅ Get NEW submissions (from personal_share_submissions table)
+        const newSubmissions = await pool.query(
+            `SELECT id, screenshot_url, recipient_numbers, points_awarded, status, created_at
+             FROM personal_share_submissions
+             WHERE user_id = $1 AND status = 'approved'
+             ORDER BY created_at DESC`,
+            [userId]
+        );
+
+        // ✅ Parse new submissions and add recipient_count
+        const parsedNewSubmissions = newSubmissions.rows.map(sub => {
+            try {
+                const data = JSON.parse(sub.recipient_numbers || '{}');
+                return {
+                    ...sub,
+                    recipient_count: data.recipients?.length || 0,
+                    screenshots: data.screenshots || [],
+                    recipients: data.recipients || []
+                };
+            } catch (e) {
+                return { ...sub, recipient_count: 0 };
+            }
+        });
+
+        // ✅ Combine both old and new submissions
+        const allSubmissions = [...oldSubmissions.rows, ...parsedNewSubmissions];
+
+        // Get referral stats
+        const referralStats = await pool.query(
+            `SELECT COUNT(*) as total_referrals, 
+                    COALESCE(SUM(total_commission_earned), 0) as total_commission
+             FROM referrals
+             WHERE referrer_id = $1`,
+            [userId]
+        );
+
+        // Get streak data
+        const streak = await pool.query(
+            'SELECT current_streak, longest_streak, last_share_date FROM user_streaks WHERE user_id = $1',
+            [userId]
+        );
+
+        // Get spin count
+        const spins = await pool.query(
+            'SELECT bonus_spins, free_spins FROM user_spins WHERE user_id = $1',
+            [userId]
+        );
+
+        res.json({
+            user: user.rows[0],
+            submissions: allSubmissions,
+            referralStats: referralStats.rows[0] || { total_referrals: 0, total_commission: 0 },
+            streak: streak.rows[0] || { current_streak: 0, longest_streak: 0, last_share_date: null },
+            spins: spins.rows[0] || { bonus_spins: 0, free_spins: 0 }
+        });
+
+    } catch (error) {
+        console.error('Error fetching user profile:', error);
+        res.status(500).json({ error: 'Failed to fetch user profile' });
     }
 });
 
@@ -4563,7 +4656,7 @@ router.get('/user-milestones/:userId', authenticateUser, async (req, res) => {
                 if (data.recipients) {
                     data.recipients.forEach(num => uniqueRecipients.add(num));
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
 
         // Get global tasks
