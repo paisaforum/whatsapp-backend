@@ -8414,6 +8414,7 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
 });
 
 
+// Get activity logs (for UserActivityLogs page)
 router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -8451,7 +8452,7 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
             ? parseInt(retentionResult.rows[0].setting_value)
             : 30;
 
-        // Get stats including old activities count - FIXED: use 'points' not 'points_awarded'
+        // Get stats including old activities count
         const statsQuery = `
             SELECT 
                 COUNT(*) as total_activities,
@@ -8479,6 +8480,4 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
         res.status(500).json({ error: 'Failed to fetch user activity logs' });
     }
 });
-
-
 module.exports = router;
