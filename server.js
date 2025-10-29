@@ -8354,7 +8354,7 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
 
 
 // Get activity logs (for UserActivityLogs page)
-router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { limit = 500 } = req.query; // Default to last 500 activities
