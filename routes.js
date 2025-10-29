@@ -2375,48 +2375,59 @@ router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, re
 });
 
 // Get activity logs (SUPER ADMIN ONLY)
-router.get('/admin/activity-logs', authenticateAdmin, async (req, res) => {
+// Get activity logs (for UserActivityLogs page)
+router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { adminId, limit = 50 } = req.query;
+        const { limit = 500 } = req.query;
 
-        // Check if super admin
-        const adminCheck = await pool.query(
-            'SELECT role FROM admins WHERE id = $1',
-            [req.admin.adminId]
-        );
-
-        if (adminCheck.rows[0].role !== 'super_admin') {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-
-        // Build query with JOIN to get admin username
-        let query = `
-            SELECT aal.*, a.username as admin_username
-            FROM admin_activity_logs aal
-            JOIN admins a ON aal.admin_id = a.id
+        // Get activities with user info - FIXED: use 'points' not 'points_awarded'
+        const activitiesQuery = `
+            SELECT 
+                al.id,
+                al.user_id,
+                al.activity_type,
+                al.title,
+                al.description,
+                al.points as points_awarded,
+                al.metadata,
+                al.created_at,
+                u.whatsapp_number
+            FROM activity_log al
+            INNER JOIN users u ON al.user_id = u.id
+            ORDER BY al.created_at DESC
+            LIMIT $1
         `;
 
-        const params = [];
+        const activities = await pool.query(activitiesQuery, [limit]);
 
-        // If adminId provided, filter by that admin
-        if (adminId) {
-            query += ' WHERE aal.admin_id = $1';
-            params.push(adminId);
-        }
+        // Get stats
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-        query += ' ORDER BY aal.created_at DESC LIMIT $' + (params.length + 1);
-        params.push(limit);
+        const statsQuery = `
+            SELECT 
+                COUNT(*) as total_activities,
+                COUNT(*) FILTER (WHERE created_at >= $1) as today_activities,
+                COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $1) as active_users_today,
+                COALESCE(SUM(points) FILTER (WHERE created_at >= $1), 0) as points_distributed_today
+            FROM activity_log
+        `;
 
-        const result = await pool.query(query, params);
+        const stats = await pool.query(statsQuery, [today]);
 
-        res.json({ logs: result.rows });
+        console.log(`✅ Fetched ${activities.rows.length} activities`);
+
+        res.json({
+            activities: activities.rows,
+            stats: stats.rows[0]
+        });
+
     } catch (error) {
         console.error('Error fetching activity logs:', error);
         res.status(500).json({ error: 'Failed to fetch activity logs' });
     }
 });
-
 
 
 
@@ -8287,6 +8298,7 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
         res.status(500).json({ error: 'Failed to fetch referrals' });
     }
 });
+
 
 // Get activity logs (for UserActivityLogs page)
 router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
