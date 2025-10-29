@@ -6792,10 +6792,34 @@ router.post('/cleanup-activities', authenticateAdmin, async (req, res) => {
 
 // ==================== ACTIVITY LOG ADMIN ENDPOINTS ====================
 
-// Get activity statistics
+// Get activity statistics with recent activities
 router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
+        const { limit = 500 } = req.query;
+
+        // Get activities with user info
+        const activitiesQuery = `
+            SELECT 
+                al.id,
+                al.user_id,
+                al.activity_type,
+                al.title,
+                al.description,
+                al.points as points_awarded,
+                al.metadata,
+                al.created_at,
+                u.whatsapp_number
+            FROM activity_log al
+            INNER JOIN users u ON al.user_id = u.id
+            ORDER BY al.created_at DESC
+            LIMIT $1
+        `;
+        const activities = await pool.query(activitiesQuery, [limit]);
+
+        // Get today stats
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
         // Total count
         const totalResult = await pool.query('SELECT COUNT(*) as total FROM activity_log');
@@ -6814,19 +6838,44 @@ router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
              ORDER BY count DESC`
         );
 
-        // Count activities older than 30 days
+        // Get retention setting
+        const retentionResult = await pool.query(
+            "SELECT setting_value FROM settings WHERE setting_key = 'activity_log_retention_days'"
+        );
+        const retentionDays = retentionResult.rows.length > 0
+            ? parseInt(retentionResult.rows[0].setting_value)
+            : 30;
+
+        // Count activities older than retention days
         const oldActivitiesResult = await pool.query(
             `SELECT COUNT(*) as count 
              FROM activity_log 
-             WHERE created_at < NOW() - INTERVAL '30 days'`
+             WHERE created_at < NOW() - INTERVAL '${retentionDays} days'`
+        );
+
+        // Today's stats
+        const todayStats = await pool.query(
+            `SELECT 
+                COUNT(*) as today_activities,
+                COUNT(DISTINCT user_id) as active_users_today,
+                COALESCE(SUM(points), 0) as points_distributed_today
+             FROM activity_log
+             WHERE created_at >= $1`,
+            [today]
         );
 
         res.json({
-            total,
-            oldest: rangeResult.rows[0].oldest,
-            newest: rangeResult.rows[0].newest,
-            byType: byTypeResult.rows,
-            oldActivitiesCount: parseInt(oldActivitiesResult.rows[0].count)
+            activities: activities.rows,
+            stats: {
+                total_activities: total,
+                today_activities: parseInt(todayStats.rows[0].today_activities),
+                active_users_today: parseInt(todayStats.rows[0].active_users_today),
+                points_distributed_today: parseInt(todayStats.rows[0].points_distributed_today),
+                old_activities: parseInt(oldActivitiesResult.rows[0].count),
+                oldest: rangeResult.rows[0].oldest,
+                newest: rangeResult.rows[0].newest,
+                byType: byTypeResult.rows
+            }
         });
     } catch (error) {
         console.error('Error fetching activity stats:', error);
@@ -7204,63 +7253,6 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, async (req, res) 
     }
 });
 
-// Get detailed user information
-router.get('/admin/user-details/:userId', authenticateAdmin, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { userId } = req.params;
-
-        // Get user basic info
-        const userInfo = await pool.query(`
-            SELECT 
-                u.*,
-                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals,
-                (SELECT COUNT(*) FROM referrals WHERE referred_id = u.id) as is_referred,
-                (SELECT whatsapp_number FROM users WHERE referral_code = u.referred_by_code) as referrer_phone
-            FROM users u
-            WHERE u.id = $1
-        `, [userId]);
-
-        if (userInfo.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Get IP statistics
-        const ipStats = await pool.query(`
-            SELECT 
-                (SELECT COUNT(DISTINCT id) FROM users WHERE registration_ip = $1 AND registration_ip IS NOT NULL) as users_same_reg_ip,
-                (SELECT COUNT(DISTINCT id) FROM users WHERE last_login_ip = $2 AND last_login_ip IS NOT NULL) as users_same_login_ip
-        `, [userInfo.rows[0].registration_ip, userInfo.rows[0].last_login_ip]);
-
-        // Get IP history
-        const ipHistory = await pool.query(`
-            SELECT * FROM user_ip_history
-            WHERE user_id = $1
-            ORDER BY created_at DESC
-            LIMIT 20
-        `, [userId]);
-
-        // Get activity stats
-        const activityStats = await pool.query(`
-            SELECT 
-                (SELECT COUNT(*) FROM submissions WHERE user_id = $1) as total_submissions,
-                (SELECT COUNT(*) FROM spin_history WHERE user_id = $1) as total_spins,
-                (SELECT COUNT(*) FROM redemptions WHERE user_id = $1) as total_redemptions,
-                (SELECT SUM(points_requested) FROM redemptions WHERE user_id = $1 AND status = 'approved') as total_redeemed_points
-        `, [userId]);
-
-        res.json({
-            user: userInfo.rows[0],
-            ipStats: ipStats.rows[0],
-            ipHistory: ipHistory.rows,
-            activityStats: activityStats.rows[0]
-        });
-    } catch (error) {
-        console.error('Error fetching user details:', error);
-        res.status(500).json({ error: 'Failed to fetch user details' });
-    }
-});
-
 // IP Lookup - Find all users with specific IP
 router.get('/admin/ip-lookup', authenticateAdmin, async (req, res) => {
     try {
@@ -7526,6 +7518,100 @@ router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => 
     } catch (error) {
         console.error('Error updating user status:', error);
         res.status(500).json({ error: 'Failed to update user status' });
+    }
+});
+
+
+
+// Ban user (sets is_flagged to true in users table)
+router.post('/admin/ban-user', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, reason } = req.body;
+
+        if (!userId || !reason) {
+            return res.status(400).json({ error: 'User ID and reason are required' });
+        }
+
+        // Update user record
+        await pool.query(
+            `UPDATE users 
+             SET is_flagged = true, 
+                 flag_reason = $1, 
+                 flagged_at = NOW(), 
+                 flagged_by = $2,
+                 is_active = false
+             WHERE id = $3`,
+            [reason, req.admin.adminId, userId]
+        );
+
+        // Create entry in user_flags table
+        await pool.query(
+            `INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, created_at)
+             VALUES ($1, $2, $3, $4, NOW())`,
+            [userId, req.admin.adminId, 'admin_ban', reason]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'ban_user', `Banned user ID ${userId}: ${reason}`);
+
+        console.log(`✅ User ${userId} banned by admin ${req.admin.adminId}`);
+
+        res.json({
+            success: true,
+            message: 'User banned successfully'
+        });
+
+    } catch (error) {
+        console.error('Error banning user:', error);
+        res.status(500).json({ error: 'Failed to ban user' });
+    }
+});
+
+// Unban user (sets is_flagged to false in users table)
+router.post('/admin/unban-user', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        // Update user record
+        await pool.query(
+            `UPDATE users 
+             SET is_flagged = false, 
+                 flag_reason = NULL, 
+                 flagged_at = NULL, 
+                 flagged_by = NULL,
+                 is_active = true
+             WHERE id = $1`,
+            [userId]
+        );
+
+        // Mark all user_flags as resolved
+        await pool.query(
+            `UPDATE user_flags 
+             SET is_resolved = true, 
+                 resolved_by = $1, 
+                 resolved_at = NOW(),
+                 resolution_action = 'unbanned'
+             WHERE user_id = $2 AND is_resolved = false`,
+            [req.admin.adminId, userId]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'unban_user', `Unbanned user ID ${userId}`);
+
+        console.log(`✅ User ${userId} unbanned by admin ${req.admin.adminId}`);
+
+        res.json({
+            success: true,
+            message: 'User unbanned successfully'
+        });
+
+    } catch (error) {
+        console.error('Error unbanning user:', error);
+        res.status(500).json({ error: 'Failed to unban user' });
     }
 });
 
@@ -8162,18 +8248,34 @@ router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('vi
             LIMIT 20
         `, [userId]);
 
+        // Get activity stats - FIXED: Only count tasks where user earned points
         const activityStats = await pool.query(`
     SELECT 
-        COUNT(DISTINCT s.id) as total_submissions,
-        COUNT(DISTINCT sh.id) as total_spins,
-        COUNT(DISTINCT red.id) as total_redemptions,
-        COALESCE(SUM(CASE WHEN red.status = 'completed' THEN red.points_requested ELSE 0 END), 0) as total_redeemed_points
-    FROM users u
-    LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-    LEFT JOIN spin_history sh ON u.id = sh.user_id
-    LEFT JOIN redemptions red ON u.id = red.user_id
-    WHERE u.id = $1
-    GROUP BY u.id
+        (
+            SELECT COUNT(*)
+            FROM user_lead_assignments ula
+            WHERE ula.user_id = $1 AND ula.status = 'approved' AND ula.points_awarded > 0
+        ) + 
+        (
+            SELECT COUNT(*)
+            FROM personal_share_submissions pss
+            WHERE pss.user_id = $1 AND pss.status = 'approved'
+        ) as total_submissions,
+        (
+            SELECT COUNT(*)
+            FROM spin_history
+            WHERE user_id = $1
+        ) as total_spins,
+        (
+            SELECT COUNT(*)
+            FROM redemptions
+            WHERE user_id = $1
+        ) as total_redemptions,
+        (
+            SELECT COALESCE(SUM(points_requested), 0)
+            FROM redemptions
+            WHERE user_id = $1 AND status = 'completed'
+        ) as total_redeemed_points
 `, [userId]);
 
         res.json({
@@ -8289,5 +8391,56 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
 });
 
 
+// Get activity logs (for UserActivityLogs page)
+router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { limit = 500 } = req.query; // Default to last 500 activities
+
+        // Get activities with user info
+        const activitiesQuery = `
+            SELECT 
+                al.id,
+                al.user_id,
+                al.activity_type,
+                al.description,
+                al.points_awarded,
+                al.created_at,
+                u.whatsapp_number
+            FROM activity_log al
+            INNER JOIN users u ON al.user_id = u.id
+            ORDER BY al.created_at DESC
+            LIMIT $1
+        `;
+
+        const activities = await pool.query(activitiesQuery, [limit]);
+
+        // Get stats
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const statsQuery = `
+            SELECT 
+                COUNT(*) as total_activities,
+                COUNT(*) FILTER (WHERE created_at >= $1) as today_activities,
+                COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $1) as active_users_today,
+                COALESCE(SUM(points_awarded) FILTER (WHERE created_at >= $1), 0) as points_distributed_today
+            FROM activity_log
+        `;
+
+        const stats = await pool.query(statsQuery, [today]);
+
+        console.log(`✅ Fetched ${activities.rows.length} activities`);
+
+        res.json({
+            activities: activities.rows,
+            stats: stats.rows[0]
+        });
+
+    } catch (error) {
+        console.error('Error fetching activity logs:', error);
+        res.status(500).json({ error: 'Failed to fetch activity logs' });
+    }
+});
 
 module.exports = router;
