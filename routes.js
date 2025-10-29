@@ -8481,4 +8481,144 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
     }
 });
 
+
+
+// ==================== USER REFERRAL DATA ROUTES ====================
+
+// Get referral statistics (for stats cards)
+router.get('/admin/referral-stats', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        const stats = await pool.query(`
+            SELECT 
+                COUNT(DISTINCT u.id) as total_users,
+                COUNT(DISTINCT r.referrer_id) FILTER (WHERE r.referrer_id IS NOT NULL) as active_referrers,
+                COUNT(r.id) as total_referrals,
+                COALESCE(SUM(pt.amount) FILTER (WHERE pt.transaction_type = 'referral'), 0) as total_commission
+            FROM users u
+            LEFT JOIN referrals r ON u.id = r.referrer_id
+            LEFT JOIN point_transactions pt ON u.id = pt.user_id AND pt.transaction_type = 'referral'
+        `);
+
+        res.json(stats.rows[0]);
+    } catch (error) {
+        console.error('Error fetching referral stats:', error);
+        res.status(500).json({ error: 'Failed to fetch statistics' });
+    }
+});
+
+// Get recent users
+router.get('/admin/recent-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { limit = 10 } = req.query;
+
+        const users = await pool.query(`
+            SELECT 
+                u.id,
+                u.whatsapp_number,
+                u.points,
+                u.created_at,
+                u.is_active,
+                COUNT(r.id) as total_referrals
+            FROM users u
+            LEFT JOIN referrals r ON u.id = r.referrer_id
+            GROUP BY u.id
+            ORDER BY u.created_at DESC
+            LIMIT $1
+        `, [limit]);
+
+        res.json({ users: users.rows });
+    } catch (error) {
+        console.error('Error fetching recent users:', error);
+        res.status(500).json({ error: 'Failed to fetch recent users' });
+    }
+});
+
+// Search users by phone or ID
+router.get('/admin/search-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { query, type } = req.query;
+
+        let searchQuery;
+        let params;
+
+        if (type === 'id') {
+            searchQuery = `
+                SELECT 
+                    u.id,
+                    u.whatsapp_number,
+                    u.points,
+                    u.is_active,
+                    COUNT(r.id) as total_referrals
+                FROM users u
+                LEFT JOIN referrals r ON u.id = r.referrer_id
+                WHERE u.id = $1
+                GROUP BY u.id
+            `;
+            params = [parseInt(query)];
+        } else {
+            // Phone search
+            searchQuery = `
+                SELECT 
+                    u.id,
+                    u.whatsapp_number,
+                    u.points,
+                    u.is_active,
+                    COUNT(r.id) as total_referrals
+                FROM users u
+                LEFT JOIN referrals r ON u.id = r.referrer_id
+                WHERE u.whatsapp_number LIKE $1
+                GROUP BY u.id
+                LIMIT 20
+            `;
+            params = [`%${query}%`];
+        }
+
+        const users = await pool.query(searchQuery, params);
+
+        res.json({ users: users.rows });
+    } catch (error) {
+        console.error('Error searching users:', error);
+        res.status(500).json({ error: 'Failed to search users' });
+    }
+});
+
+// Get user's referrals
+router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        const referrals = await pool.query(`
+            SELECT 
+                r.id as referral_id,
+                r.referred_id,
+                u.whatsapp_number,
+                u.points,
+                u.is_active,
+                r.created_at as joined_at,
+                CASE WHEN u.is_active THEN 'active' ELSE 'inactive' END as status,
+                COUNT(r2.id) as their_referrals,
+                COALESCE(SUM(pt.amount) FILTER (WHERE pt.transaction_type = 'referral'), 0) as total_commission_earned
+            FROM referrals r
+            INNER JOIN users u ON r.referred_id = u.id
+            LEFT JOIN referrals r2 ON u.id = r2.referrer_id
+            LEFT JOIN point_transactions pt ON r.referrer_id = pt.user_id 
+                AND pt.transaction_type = 'referral' 
+                AND pt.reference_id = r.referred_id::text
+            WHERE r.referrer_id = $1
+            GROUP BY r.id, r.referred_id, u.whatsapp_number, u.points, u.is_active, r.created_at
+            ORDER BY r.created_at DESC
+        `, [userId]);
+
+        res.json({ referrals: referrals.rows });
+    } catch (error) {
+        console.error('Error fetching user referrals:', error);
+        res.status(500).json({ error: 'Failed to fetch referrals' });
+    }
+});
+
 module.exports = router;
