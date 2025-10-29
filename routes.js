@@ -8420,7 +8420,7 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
         const pool = req.app.get('db');
         const { limit = 500 } = req.query;
 
-        // Get activities with user info - FIXED: use 'points' not 'points_awarded'
+        // Get activities with user info
         const activitiesQuery = `
             SELECT 
                 al.id,
@@ -8465,7 +8465,7 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
 
         const stats = await pool.query(statsQuery, [today]);
 
-        console.log(`✅ Fetched ${activities.rows.length} user activities`);
+        console.log(`✅ Fetched ${activities.rows.length} activities`);
 
         res.json({
             activities: activities.rows,
@@ -8476,8 +8476,9 @@ router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view
         });
 
     } catch (error) {
-        console.error('Error fetching user activity logs:', error);
-        res.status(500).json({ error: 'Failed to fetch user activity logs' });
+        console.error('Error fetching activity logs:', error);
+        res.status(500).json({ error: 'Failed to fetch activity logs' });
     }
 });
+
 module.exports = router;
