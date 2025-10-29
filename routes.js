@@ -7215,63 +7215,6 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, async (req, res) 
     }
 });
 
-// Get detailed user information
-router.get('/admin/user-details/:userId', authenticateAdmin, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { userId } = req.params;
-
-        // Get user basic info
-        const userInfo = await pool.query(`
-            SELECT 
-                u.*,
-                (SELECT COUNT(*) FROM referrals WHERE referrer_id = u.id) as total_referrals,
-                (SELECT COUNT(*) FROM referrals WHERE referred_id = u.id) as is_referred,
-                (SELECT whatsapp_number FROM users WHERE referral_code = u.referred_by_code) as referrer_phone
-            FROM users u
-            WHERE u.id = $1
-        `, [userId]);
-
-        if (userInfo.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Get IP statistics
-        const ipStats = await pool.query(`
-            SELECT 
-                (SELECT COUNT(DISTINCT id) FROM users WHERE registration_ip = $1 AND registration_ip IS NOT NULL) as users_same_reg_ip,
-                (SELECT COUNT(DISTINCT id) FROM users WHERE last_login_ip = $2 AND last_login_ip IS NOT NULL) as users_same_login_ip
-        `, [userInfo.rows[0].registration_ip, userInfo.rows[0].last_login_ip]);
-
-        // Get IP history
-        const ipHistory = await pool.query(`
-            SELECT * FROM user_ip_history
-            WHERE user_id = $1
-            ORDER BY created_at DESC
-            LIMIT 20
-        `, [userId]);
-
-        // Get activity stats
-        const activityStats = await pool.query(`
-            SELECT 
-                (SELECT COUNT(*) FROM submissions WHERE user_id = $1) as total_submissions,
-                (SELECT COUNT(*) FROM spin_history WHERE user_id = $1) as total_spins,
-                (SELECT COUNT(*) FROM redemptions WHERE user_id = $1) as total_redemptions,
-                (SELECT SUM(points_requested) FROM redemptions WHERE user_id = $1 AND status = 'approved') as total_redeemed_points
-        `, [userId]);
-
-        res.json({
-            user: userInfo.rows[0],
-            ipStats: ipStats.rows[0],
-            ipHistory: ipHistory.rows,
-            activityStats: activityStats.rows[0]
-        });
-    } catch (error) {
-        console.error('Error fetching user details:', error);
-        res.status(500).json({ error: 'Failed to fetch user details' });
-    }
-});
-
 // IP Lookup - Find all users with specific IP
 router.get('/admin/ip-lookup', authenticateAdmin, async (req, res) => {
     try {
@@ -8267,18 +8210,34 @@ router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('vi
             LIMIT 20
         `, [userId]);
 
+        // Get activity stats - FIXED: Only count tasks where user earned points
         const activityStats = await pool.query(`
     SELECT 
-        COUNT(DISTINCT s.id) as total_submissions,
-        COUNT(DISTINCT sh.id) as total_spins,
-        COUNT(DISTINCT red.id) as total_redemptions,
-        COALESCE(SUM(CASE WHEN red.status = 'completed' THEN red.points_requested ELSE 0 END), 0) as total_redeemed_points
-    FROM users u
-    LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-    LEFT JOIN spin_history sh ON u.id = sh.user_id
-    LEFT JOIN redemptions red ON u.id = red.user_id
-    WHERE u.id = $1
-    GROUP BY u.id
+        (
+            SELECT COUNT(*)
+            FROM user_lead_assignments ula
+            WHERE ula.user_id = $1 AND ula.status = 'approved' AND ula.points_awarded > 0
+        ) + 
+        (
+            SELECT COUNT(*)
+            FROM personal_share_submissions pss
+            WHERE pss.user_id = $1 AND pss.status = 'approved'
+        ) as total_submissions,
+        (
+            SELECT COUNT(*)
+            FROM spin_history
+            WHERE user_id = $1
+        ) as total_spins,
+        (
+            SELECT COUNT(*)
+            FROM redemptions
+            WHERE user_id = $1
+        ) as total_redemptions,
+        (
+            SELECT COALESCE(SUM(points_requested), 0)
+            FROM redemptions
+            WHERE user_id = $1 AND status = 'completed'
+        ) as total_redeemed_points
 `, [userId]);
 
         res.json({
