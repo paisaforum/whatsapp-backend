@@ -8038,7 +8038,7 @@ router.get('/admin/all-users', authenticateAdmin, checkPermission('view_users'),
                     WHERE pss.user_id = u.id AND pss.status = 'approved'
                 ) as personal_shares_count,
                 (
-                    SELECT COALESCE(SUM(amount), 0)
+                    SELECT COALESCE(SUM(points_requested), 0)
                     FROM redemptions red
                     WHERE red.user_id = u.id AND red.status = 'completed'
                 ) as total_redeemed
@@ -8058,7 +8058,7 @@ router.get('/admin/all-users', authenticateAdmin, checkPermission('view_users'),
                 COUNT(*) FILTER (WHERE is_active = true) as active_users,
                 COALESCE(SUM(points), 0) as total_points,
                 (
-                    SELECT COALESCE(SUM(amount), 0)
+                    SELECT COALESCE(SUM(points_requested), 0)
                     FROM redemptions
                     WHERE status = 'completed'
                 ) as total_redeemed
@@ -8113,9 +8113,9 @@ router.delete('/admin/master-delete-users', authenticateAdmin, checkPermission('
 
         console.log('✅ All users and related data deleted');
 
-        res.json({ 
-            success: true, 
-            message: 'All users deleted successfully' 
+        res.json({
+            success: true,
+            message: 'All users deleted successfully'
         });
 
     } catch (error) {
@@ -8162,20 +8162,19 @@ router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('vi
             LIMIT 20
         `, [userId]);
 
-        // Get activity stats
         const activityStats = await pool.query(`
-            SELECT 
-                COUNT(DISTINCT s.id) as total_submissions,
-                COUNT(DISTINCT sh.id) as total_spins,
-                COUNT(DISTINCT red.id) as total_redemptions,
-                COALESCE(SUM(CASE WHEN red.status = 'completed' THEN red.amount ELSE 0 END), 0) as total_redeemed_points
-            FROM users u
-            LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
-            LEFT JOIN spin_history sh ON u.id = sh.user_id
-            LEFT JOIN redemptions red ON u.id = red.user_id
-            WHERE u.id = $1
-            GROUP BY u.id
-        `, [userId]);
+    SELECT 
+        COUNT(DISTINCT s.id) as total_submissions,
+        COUNT(DISTINCT sh.id) as total_spins,
+        COUNT(DISTINCT red.id) as total_redemptions,
+        COALESCE(SUM(CASE WHEN red.status = 'completed' THEN red.points_requested ELSE 0 END), 0) as total_redeemed_points
+    FROM users u
+    LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+    LEFT JOIN spin_history sh ON u.id = sh.user_id
+    LEFT JOIN redemptions red ON u.id = red.user_id
+    WHERE u.id = $1
+    GROUP BY u.id
+`, [userId]);
 
         res.json({
             user: user.rows[0],
