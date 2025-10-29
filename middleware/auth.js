@@ -18,8 +18,9 @@ const authenticateUser = async (req, res, next) => {
             return res.status(401).json({ error: 'Authentication required' });
         }
         
-        // Check if token is blacklisted
         const pool = req.app?.get('db');
+        
+        // Check if token is blacklisted
         if (pool) {
             const blacklisted = await pool.query(
                 'SELECT id FROM token_blacklist WHERE token = $1 AND expires_at > NOW()',
@@ -33,6 +34,37 @@ const authenticateUser = async (req, res, next) => {
         
         // Verify token
         const decoded = jwt.verify(token, JWT_SECRET);
+        
+        // CRITICAL: Check if user is banned
+        if (pool) {
+            const userResult = await pool.query(
+                'SELECT id, whatsapp_number, is_flagged, flag_reason, is_active FROM users WHERE id = $1',
+                [decoded.userId]
+            );
+
+            if (userResult.rows.length === 0) {
+                return res.status(401).json({ error: 'User not found' });
+            }
+
+            const user = userResult.rows[0];
+
+            // Check if user is banned
+            if (user.is_flagged === true) {
+                return res.status(403).json({ 
+                    error: 'Your account has been suspended',
+                    reason: user.flag_reason || 'Account suspended by administrator',
+                    isBanned: true
+                });
+            }
+
+            // Check if user is inactive
+            if (user.is_active === false && user.is_flagged === false) {
+                return res.status(403).json({ 
+                    error: 'Your account is inactive. Please contact support.',
+                    isInactive: true
+                });
+            }
+        }
         
         req.userId = decoded.userId;
         req.whatsappNumber = decoded.whatsappNumber;
@@ -54,10 +86,9 @@ const authenticateAdmin = async (req, res, next) => {
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({ error: 'No token provided' });
         }
-
         const token = authHeader.substring(7);
         
-        // ⬇️ NEW: Check if token is blacklisted
+        // Check if token is blacklisted
         const pool = req.app?.get('db');
         if (pool) {
             const blacklisted = await pool.query(
@@ -71,7 +102,6 @@ const authenticateAdmin = async (req, res, next) => {
         }
         
         const decoded = jwt.verify(token, JWT_SECRET);
-
         req.admin = {
             id: decoded.adminId,
             adminId: decoded.adminId,
@@ -79,13 +109,13 @@ const authenticateAdmin = async (req, res, next) => {
             role: decoded.role || 'admin',
             isAdmin: decoded.isAdmin
         };
-
         next();
     } catch (error) {
         console.error('Token verification error:', error);
         return res.status(401).json({ error: 'Invalid or expired token' });
     }
 };
+
 module.exports = { 
     authenticateUser, 
     authenticateAdmin, 
