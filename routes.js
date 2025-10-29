@@ -2375,13 +2375,26 @@ router.post('/admin/admins/:id/toggle-status', authenticateAdmin, async (req, re
 });
 
 // Get activity logs (SUPER ADMIN ONLY)
-// Get activity logs (for UserActivityLogs page)
+
+
 router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { limit = 500 } = req.query;
+        const { limit = 500, adminId } = req.query;
 
-        // Get activities with user info - FIXED: use 'points' not 'points_awarded'
+        // If adminId is provided, fetch ADMIN activity logs (for ManageAdmins page)
+        if (adminId) {
+            const adminLogs = await pool.query(
+                `SELECT * FROM admin_activity_logs 
+                 WHERE admin_id = $1 
+                 ORDER BY created_at DESC 
+                 LIMIT 100`,
+                [adminId]
+            );
+            return res.json({ logs: adminLogs.rows });
+        }
+
+        // Otherwise, fetch USER activity logs (currently unused, but keeping for future)
         const activitiesQuery = `
             SELECT 
                 al.id,
@@ -2416,7 +2429,7 @@ router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_user
 
         const stats = await pool.query(statsQuery, [today]);
 
-        console.log(`✅ Fetched ${activities.rows.length} activities`);
+        console.log(`✅ Fetched ${activities.rows.length} user activities`);
 
         res.json({
             activities: activities.rows,
@@ -2428,7 +2441,6 @@ router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_user
         res.status(500).json({ error: 'Failed to fetch activity logs' });
     }
 });
-
 
 
 // Get all redemption requests (admin) - with pagination, filters, search
@@ -6803,10 +6815,34 @@ router.post('/cleanup-activities', authenticateAdmin, async (req, res) => {
 
 // ==================== ACTIVITY LOG ADMIN ENDPOINTS ====================
 
-// Get activity statistics
+// Get activity statistics with recent activities
 router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
+        const { limit = 500 } = req.query;
+
+        // Get activities with user info
+        const activitiesQuery = `
+            SELECT 
+                al.id,
+                al.user_id,
+                al.activity_type,
+                al.title,
+                al.description,
+                al.points as points_awarded,
+                al.metadata,
+                al.created_at,
+                u.whatsapp_number
+            FROM activity_log al
+            INNER JOIN users u ON al.user_id = u.id
+            ORDER BY al.created_at DESC
+            LIMIT $1
+        `;
+        const activities = await pool.query(activitiesQuery, [limit]);
+
+        // Get today stats
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
         // Total count
         const totalResult = await pool.query('SELECT COUNT(*) as total FROM activity_log');
@@ -6825,19 +6861,44 @@ router.get('/admin/activity-stats', authenticateAdmin, async (req, res) => {
              ORDER BY count DESC`
         );
 
-        // Count activities older than 30 days
+        // Get retention setting
+        const retentionResult = await pool.query(
+            "SELECT setting_value FROM settings WHERE setting_key = 'activity_log_retention_days'"
+        );
+        const retentionDays = retentionResult.rows.length > 0
+            ? parseInt(retentionResult.rows[0].setting_value)
+            : 30;
+
+        // Count activities older than retention days
         const oldActivitiesResult = await pool.query(
             `SELECT COUNT(*) as count 
              FROM activity_log 
-             WHERE created_at < NOW() - INTERVAL '30 days'`
+             WHERE created_at < NOW() - INTERVAL '${retentionDays} days'`
+        );
+
+        // Today's stats
+        const todayStats = await pool.query(
+            `SELECT 
+                COUNT(*) as today_activities,
+                COUNT(DISTINCT user_id) as active_users_today,
+                COALESCE(SUM(points), 0) as points_distributed_today
+             FROM activity_log
+             WHERE created_at >= $1`,
+            [today]
         );
 
         res.json({
-            total,
-            oldest: rangeResult.rows[0].oldest,
-            newest: rangeResult.rows[0].newest,
-            byType: byTypeResult.rows,
-            oldActivitiesCount: parseInt(oldActivitiesResult.rows[0].count)
+            activities: activities.rows,
+            stats: {
+                total_activities: total,
+                today_activities: parseInt(todayStats.rows[0].today_activities),
+                active_users_today: parseInt(todayStats.rows[0].active_users_today),
+                points_distributed_today: parseInt(todayStats.rows[0].points_distributed_today),
+                old_activities: parseInt(oldActivitiesResult.rows[0].count),
+                oldest: rangeResult.rows[0].oldest,
+                newest: rangeResult.rows[0].newest,
+                byType: byTypeResult.rows
+            }
         });
     } catch (error) {
         console.error('Error fetching activity stats:', error);
@@ -8353,20 +8414,21 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
 });
 
 
-// Get activity logs (for UserActivityLogs page)
-router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+router.get('/admin/user-activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { limit = 500 } = req.query; // Default to last 500 activities
+        const { limit = 500 } = req.query;
 
-        // Get activities with user info
+        // Get activities with user info - FIXED: use 'points' not 'points_awarded'
         const activitiesQuery = `
             SELECT 
                 al.id,
                 al.user_id,
                 al.activity_type,
+                al.title,
                 al.description,
-                al.points_awarded,
+                al.points as points_awarded,
+                al.metadata,
                 al.created_at,
                 u.whatsapp_number
             FROM activity_log al
@@ -8377,32 +8439,46 @@ router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_user
 
         const activities = await pool.query(activitiesQuery, [limit]);
 
-        // Get stats
+        // Get today's date at midnight
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
+        // Get retention setting
+        const retentionResult = await pool.query(
+            "SELECT setting_value FROM settings WHERE setting_key = 'activity_log_retention_days'"
+        );
+        const retentionDays = retentionResult.rows.length > 0
+            ? parseInt(retentionResult.rows[0].setting_value)
+            : 30;
+
+        // Get stats including old activities count - FIXED: use 'points' not 'points_awarded'
         const statsQuery = `
             SELECT 
                 COUNT(*) as total_activities,
                 COUNT(*) FILTER (WHERE created_at >= $1) as today_activities,
                 COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $1) as active_users_today,
-                COALESCE(SUM(points_awarded) FILTER (WHERE created_at >= $1), 0) as points_distributed_today
+                COALESCE(SUM(points) FILTER (WHERE created_at >= $1), 0) as points_distributed_today,
+                COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '${retentionDays} days') as old_activities
             FROM activity_log
         `;
 
         const stats = await pool.query(statsQuery, [today]);
 
-        console.log(`✅ Fetched ${activities.rows.length} activities`);
+        console.log(`✅ Fetched ${activities.rows.length} user activities`);
 
         res.json({
             activities: activities.rows,
-            stats: stats.rows[0]
+            stats: {
+                ...stats.rows[0],
+                retention_days: retentionDays
+            }
         });
 
     } catch (error) {
-        console.error('Error fetching activity logs:', error);
-        res.status(500).json({ error: 'Failed to fetch activity logs' });
+        console.error('Error fetching user activity logs:', error);
+        res.status(500).json({ error: 'Failed to fetch user activity logs' });
     }
 });
+
 
 module.exports = router;
