@@ -7542,6 +7542,100 @@ router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => 
 
 
 
+// Ban user (sets is_flagged to true in users table)
+router.post('/admin/ban-user', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId, reason } = req.body;
+
+        if (!userId || !reason) {
+            return res.status(400).json({ error: 'User ID and reason are required' });
+        }
+
+        // Update user record
+        await pool.query(
+            `UPDATE users 
+             SET is_flagged = true, 
+                 flag_reason = $1, 
+                 flagged_at = NOW(), 
+                 flagged_by = $2,
+                 is_active = false
+             WHERE id = $3`,
+            [reason, req.admin.adminId, userId]
+        );
+
+        // Create entry in user_flags table
+        await pool.query(
+            `INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, created_at)
+             VALUES ($1, $2, $3, $4, NOW())`,
+            [userId, req.admin.adminId, 'admin_ban', reason]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'ban_user', `Banned user ID ${userId}: ${reason}`);
+
+        console.log(`✅ User ${userId} banned by admin ${req.admin.adminId}`);
+
+        res.json({
+            success: true,
+            message: 'User banned successfully'
+        });
+
+    } catch (error) {
+        console.error('Error banning user:', error);
+        res.status(500).json({ error: 'Failed to ban user' });
+    }
+});
+
+// Unban user (sets is_flagged to false in users table)
+router.post('/admin/unban-user', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        // Update user record
+        await pool.query(
+            `UPDATE users 
+             SET is_flagged = false, 
+                 flag_reason = NULL, 
+                 flagged_at = NULL, 
+                 flagged_by = NULL,
+                 is_active = true
+             WHERE id = $1`,
+            [userId]
+        );
+
+        // Mark all user_flags as resolved
+        await pool.query(
+            `UPDATE user_flags 
+             SET is_resolved = true, 
+                 resolved_by = $1, 
+                 resolved_at = NOW(),
+                 resolution_action = 'unbanned'
+             WHERE user_id = $2 AND is_resolved = false`,
+            [req.admin.adminId, userId]
+        );
+
+        await logAdminActivity(pool, req.admin.adminId, 'unban_user', `Unbanned user ID ${userId}`);
+
+        console.log(`✅ User ${userId} unbanned by admin ${req.admin.adminId}`);
+
+        res.json({
+            success: true,
+            message: 'User unbanned successfully'
+        });
+
+    } catch (error) {
+        console.error('Error unbanning user:', error);
+        res.status(500).json({ error: 'Failed to unban user' });
+    }
+});
+
+
+
 // ==================== EARNINGS BREAKDOWN ====================
 
 // Get user earnings breakdown
