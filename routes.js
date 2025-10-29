@@ -7999,4 +7999,294 @@ router.get('/admin/personal-share/stats', authenticateAdmin, checkPermission('ma
     }
 });
 
+
+
+// ==================== NEW USER MANAGEMENT ROUTES (No Conflicts) ====================
+
+// Get all users with comprehensive stats (for AllUsers page)
+router.get('/admin/all-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get all users with their stats
+        const usersQuery = `
+            SELECT 
+                u.id,
+                u.whatsapp_number,
+                u.points,
+                u.referral_code,
+                u.is_active,
+                u.created_at,
+                u.registration_ip,
+                u.last_login_ip,
+                u.spin_earnings,
+                u.referral_earnings,
+                u.task_earnings,
+                u.milestone_earnings,
+                u.signup_bonus_earnings,
+                u.streak_earnings,
+                COUNT(DISTINCT r.referred_id) as total_referrals,
+                COUNT(DISTINCT ula.id) FILTER (WHERE ula.status = 'approved') as global_tasks_count,
+                (
+                    SELECT COUNT(*)
+                    FROM submissions s
+                    WHERE s.user_id = u.id AND s.status = 'active'
+                ) +
+                (
+                    SELECT COUNT(*)
+                    FROM personal_share_submissions pss
+                    WHERE pss.user_id = u.id AND pss.status = 'approved'
+                ) as personal_shares_count,
+                (
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM redemptions red
+                    WHERE red.user_id = u.id AND red.status = 'completed'
+                ) as total_redeemed
+            FROM users u
+            LEFT JOIN referrals r ON u.id = r.referrer_id
+            LEFT JOIN user_lead_assignments ula ON u.id = ula.user_id
+            GROUP BY u.id
+            ORDER BY u.created_at DESC
+        `;
+
+        const users = await pool.query(usersQuery);
+
+        // Get overall stats
+        const statsQuery = `
+            SELECT 
+                COUNT(*) as total_users,
+                COUNT(*) FILTER (WHERE is_active = true) as active_users,
+                COALESCE(SUM(points), 0) as total_points,
+                (
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM redemptions
+                    WHERE status = 'completed'
+                ) as total_redeemed
+            FROM users
+        `;
+
+        const stats = await pool.query(statsQuery);
+
+        console.log(`✅ Fetched ${users.rows.length} users`);
+
+        res.json({
+            users: users.rows,
+            stats: stats.rows[0]
+        });
+
+    } catch (error) {
+        console.error('Error fetching all users:', error);
+        res.status(500).json({ error: 'Failed to fetch users' });
+    }
+});
+
+// Master delete all users
+router.delete('/admin/master-delete-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        console.log('🚨 MASTER DELETE INITIATED');
+
+        // Delete in correct order to respect foreign key constraints
+        await pool.query('DELETE FROM point_transactions');
+        await pool.query('DELETE FROM activity_log');
+        await pool.query('DELETE FROM notifications');
+        await pool.query('DELETE FROM user_recipients');
+        await pool.query('DELETE FROM submissions');
+        await pool.query('DELETE FROM personal_share_submissions');
+        await pool.query('DELETE FROM user_lead_assignments');
+        await pool.query('DELETE FROM user_milestones');
+        await pool.query('DELETE FROM user_streaks');
+        await pool.query('DELETE FROM user_spins');
+        await pool.query('DELETE FROM redemptions');
+        await pool.query('DELETE FROM referrals');
+        await pool.query('DELETE FROM user_ip_history');
+        await pool.query('DELETE FROM spin_history');
+        await pool.query('DELETE FROM broadcast_reads');
+        await pool.query('DELETE FROM user_messages');
+        await pool.query('DELETE FROM user_flags');
+        await pool.query('DELETE FROM token_blacklist');
+        await pool.query('DELETE FROM activity_participations');
+        await pool.query('DELETE FROM lead_submissions');
+        await pool.query('DELETE FROM user_campaign_stats');
+        await pool.query('DELETE FROM users');
+
+        console.log('✅ All users and related data deleted');
+
+        res.json({ 
+            success: true, 
+            message: 'All users deleted successfully' 
+        });
+
+    } catch (error) {
+        console.error('Error in master delete:', error);
+        res.status(500).json({ error: 'Failed to delete users' });
+    }
+});
+
+// Get comprehensive user details (for UserDetails page)
+router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        // Get user basic info with earnings
+        const user = await pool.query(`
+            SELECT 
+                u.*,
+                (SELECT whatsapp_number FROM users WHERE referral_code = u.referred_by_code) as referrer_phone,
+                COUNT(DISTINCT r.referred_id) as total_referrals
+            FROM users u
+            LEFT JOIN referrals r ON u.id = r.referrer_id
+            WHERE u.id = $1
+            GROUP BY u.id
+        `, [userId]);
+
+        if (user.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get IP stats
+        const ipStats = await pool.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM users WHERE registration_ip = $1) as users_same_reg_ip,
+                (SELECT COUNT(*) FROM users WHERE last_login_ip = $2) as users_same_login_ip
+        `, [user.rows[0].registration_ip, user.rows[0].last_login_ip]);
+
+        // Get IP history (from user_ip_history table)
+        const ipHistory = await pool.query(`
+            SELECT ip_address, action, created_at, id
+            FROM user_ip_history 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC 
+            LIMIT 20
+        `, [userId]);
+
+        // Get activity stats
+        const activityStats = await pool.query(`
+            SELECT 
+                COUNT(DISTINCT s.id) as total_submissions,
+                COUNT(DISTINCT sh.id) as total_spins,
+                COUNT(DISTINCT red.id) as total_redemptions,
+                COALESCE(SUM(CASE WHEN red.status = 'completed' THEN red.amount ELSE 0 END), 0) as total_redeemed_points
+            FROM users u
+            LEFT JOIN submissions s ON u.id = s.user_id AND s.status = 'active'
+            LEFT JOIN spin_history sh ON u.id = sh.user_id
+            LEFT JOIN redemptions red ON u.id = red.user_id
+            WHERE u.id = $1
+            GROUP BY u.id
+        `, [userId]);
+
+        res.json({
+            user: user.rows[0],
+            ipStats: ipStats.rows[0] || { users_same_reg_ip: 0, users_same_login_ip: 0 },
+            ipHistory: ipHistory.rows,
+            activityStats: activityStats.rows[0] || {
+                total_submissions: 0,
+                total_spins: 0,
+                total_redemptions: 0,
+                total_redeemed_points: 0
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching user details:', error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+});
+
+// Search users
+router.get('/admin/search-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { query, type } = req.query;
+
+        let searchQuery;
+        if (type === 'id') {
+            searchQuery = `
+                SELECT u.*, COUNT(DISTINCT r.referred_id) as total_referrals
+                FROM users u
+                LEFT JOIN referrals r ON u.id = r.referrer_id
+                WHERE u.id = $1
+                GROUP BY u.id
+            `;
+        } else {
+            searchQuery = `
+                SELECT u.*, COUNT(DISTINCT r.referred_id) as total_referrals
+                FROM users u
+                LEFT JOIN referrals r ON u.id = r.referrer_id
+                WHERE u.whatsapp_number LIKE $1
+                GROUP BY u.id
+                LIMIT 10
+            `;
+        }
+
+        const searchParam = type === 'id' ? query : `%${query}%`;
+        const users = await pool.query(searchQuery, [searchParam]);
+
+        res.json({ users: users.rows });
+
+    } catch (error) {
+        console.error('Error searching users:', error);
+        res.status(500).json({ error: 'Failed to search users' });
+    }
+});
+
+// Get recent users
+router.get('/admin/recent-users', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const limit = req.query.limit || 10;
+
+        const users = await pool.query(`
+            SELECT u.*, COUNT(DISTINCT r.referred_id) as total_referrals
+            FROM users u
+            LEFT JOIN referrals r ON u.id = r.referrer_id
+            GROUP BY u.id
+            ORDER BY u.created_at DESC
+            LIMIT $1
+        `, [limit]);
+
+        res.json({ users: users.rows });
+
+    } catch (error) {
+        console.error('Error fetching recent users:', error);
+        res.status(500).json({ error: 'Failed to fetch recent users' });
+    }
+});
+
+// Get user referrals
+router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { userId } = req.params;
+
+        const referrals = await pool.query(`
+            SELECT 
+                r.id as referral_id,
+                r.referred_id,
+                r.total_commission_earned,
+                r.created_at as joined_at,
+                u.whatsapp_number,
+                u.points,
+                u.is_active,
+                CASE WHEN u.is_active THEN 'active' ELSE 'inactive' END as status,
+                COUNT(DISTINCT r2.referred_id) as their_referrals
+            FROM referrals r
+            JOIN users u ON r.referred_id = u.id
+            LEFT JOIN referrals r2 ON u.id = r2.referrer_id
+            WHERE r.referrer_id = $1
+            GROUP BY r.id, r.referred_id, r.total_commission_earned, r.created_at, 
+                     u.whatsapp_number, u.points, u.is_active
+            ORDER BY r.created_at DESC
+        `, [userId]);
+
+        res.json({ referrals: referrals.rows });
+
+    } catch (error) {
+        console.error('Error fetching user referrals:', error);
+        res.status(500).json({ error: 'Failed to fetch referrals' });
+    }
+});
+
 module.exports = router;
