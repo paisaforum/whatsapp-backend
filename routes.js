@@ -8288,4 +8288,56 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
     }
 });
 
+// Get activity logs (for UserActivityLogs page)
+router.get('/admin/activity-logs', authenticateAdmin, checkPermission('view_users'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { limit = 500 } = req.query; // Default to last 500 activities
+
+        // Get activities with user info
+        const activitiesQuery = `
+            SELECT 
+                al.id,
+                al.user_id,
+                al.activity_type,
+                al.description,
+                al.points_awarded,
+                al.created_at,
+                u.whatsapp_number
+            FROM activity_log al
+            INNER JOIN users u ON al.user_id = u.id
+            ORDER BY al.created_at DESC
+            LIMIT $1
+        `;
+
+        const activities = await pool.query(activitiesQuery, [limit]);
+
+        // Get stats
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const statsQuery = `
+            SELECT 
+                COUNT(*) as total_activities,
+                COUNT(*) FILTER (WHERE created_at >= $1) as today_activities,
+                COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $1) as active_users_today,
+                COALESCE(SUM(points_awarded) FILTER (WHERE created_at >= $1), 0) as points_distributed_today
+            FROM activity_log
+        `;
+
+        const stats = await pool.query(statsQuery, [today]);
+
+        console.log(`✅ Fetched ${activities.rows.length} activities`);
+
+        res.json({
+            activities: activities.rows,
+            stats: stats.rows[0]
+        });
+
+    } catch (error) {
+        console.error('Error fetching activity logs:', error);
+        res.status(500).json({ error: 'Failed to fetch activity logs' });
+    }
+});
+
 module.exports = router;
