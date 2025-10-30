@@ -6002,11 +6002,6 @@ router.put('/admin/campaigns/:id', authenticateAdmin, uploadOffer.single('offerI
             values.push(messageTemplate);
             paramCount++;
         }
-        if (pointsPerLead) {
-            updates.push(`points_per_lead = $${paramCount}`);
-            values.push(pointsPerLead);
-            paramCount++;
-        }
         if (offerImageUrl) {
             updates.push(`offer_image_url = $${paramCount}`);
             values.push(offerImageUrl);
@@ -6721,10 +6716,19 @@ router.put('/admin/campaign-settings/:key', authenticateAdmin, async (req, res) 
         const { key } = req.params;
         const { value } = req.body;
 
+        // Update campaign_settings table
         await pool.query(
             'UPDATE campaign_settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
             [value, key]
         );
+
+        // ✅ ADD THIS: If points_per_lead is updated, sync to campaigns table
+        if (key === 'points_per_lead') {
+            await pool.query(
+                'UPDATE campaigns SET points_per_lead = $1, updated_at = NOW() WHERE id = 1',
+                [parseInt(value)]
+            );
+        }
 
         await logAdminActivity(pool, req.admin.adminId, 'update_campaign_setting', `Updated ${key} to ${value}`);
 
