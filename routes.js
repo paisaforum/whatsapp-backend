@@ -7949,6 +7949,12 @@ router.put('/admin/personal-share/settings', authenticateAdmin, checkPermission(
             `, [pointsPerSubmission, instantPointsAward, adminReviewRequired, currentSettings.rows[0].id]);
         }
 
+        // ✅ ADD THIS: Sync to settings table
+        await pool.query(
+            'UPDATE settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
+            [pointsPerSubmission.toString(), 'points_per_share']
+        );
+
         await logAdminActivity(pool, req.admin.adminId, 'update_personal_share_settings', 'Updated personal share task settings');
 
         res.json({ message: 'Settings updated successfully' });
