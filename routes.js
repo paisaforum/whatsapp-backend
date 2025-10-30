@@ -8297,7 +8297,7 @@ router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('vi
         (
             SELECT COALESCE(SUM(points_requested), 0)
             FROM redemptions
-            WHERE user_id = $1 AND status = 'completed'
+            WHERE user_id = $1 AND status = 'approved'
         ) as total_redeemed_points
 `, [userId]);
 
