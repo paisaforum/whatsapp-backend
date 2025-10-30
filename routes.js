@@ -5925,14 +5925,11 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                 );
                 console.log(`🎯 Lead ${assignment.lead_id} completed permanently (${currentTimesAssigned}/${maxTimesAssigned} times)`);
             }
-        } else {
-            console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
-        }
-
-        await logGlobalTaskActivity(pool, userId, assignment.lead_phone, pointsPerLead, assignment.lead_id, instantAward);
 
 
-        // ✅ UPDATE STREAK FOR USER COMPLETION
+
+
+              // ✅ UPDATE STREAK FOR USER COMPLETION
         try {
             const today = new Date().toISOString().split('T')[0];
             let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
@@ -6003,6 +6000,17 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
         } catch (streakError) {
             console.error('User completion streak error:', streakError);
         }
+
+
+        
+        } else {
+            console.log(`⏳ Lead ${assignment.lead_id} awaiting admin approval before recycling`);
+        }
+
+        await logGlobalTaskActivity(pool, userId, assignment.lead_phone, pointsPerLead, assignment.lead_id, instantAward);
+
+
+      
 
 
         res.json({
