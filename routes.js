@@ -4169,12 +4169,11 @@ router.delete('/admin/delete-banner/:id', authenticateAdmin, checkPermission('ma
 });
 
 
-// Track social link clicks (public route)
 router.post('/track-social-link-click/:id', async (req, res) => {
     const { id } = req.params;
+    const pool = req.app.get('db'); // ✅ ADD THIS LINE
 
     try {
-        // Increment click count for active links only
         const result = await pool.query(
             'UPDATE social_links SET clicks = clicks + 1 WHERE id = $1 AND is_active = true RETURNING *',
             [id]
