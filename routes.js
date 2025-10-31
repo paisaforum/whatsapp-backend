@@ -8556,18 +8556,17 @@ router.get('/admin/user-details/:userId', authenticateAdmin, checkPermission('vi
         const { userId } = req.params;
 
         // Get user basic info with earnings
-        // Get user basic info with earnings
         const user = await pool.query(`
             SELECT 
                 u.*,
                 (SELECT whatsapp_number FROM users WHERE referral_code = u.referred_by_code) as referrer_phone,
                 COUNT(DISTINCT r.referred_id) as total_referrals,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'spin'), 0) as spin_earnings,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type LIKE '%referral%'), 0) as referral_earnings,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type IN ('task', 'personal_share_submission', 'personal_share_approved')), 0) as task_earnings,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'milestone'), 0) as milestone_earnings,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'signup_bonus'), 0) as signup_bonus_earnings,
-                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'streak_bonus'), 0) as streak_earnings
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'spin'), 0)::integer as spin_earnings,
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type LIKE '%referral%'), 0)::integer as referral_earnings,
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type IN ('task', 'personal_share_submission', 'personal_share_approved')), 0)::integer as task_earnings,
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'milestone'), 0)::integer as milestone_earnings,
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'signup_bonus'), 0)::integer as signup_bonus_earnings,
+                COALESCE((SELECT SUM(amount) FROM point_transactions WHERE user_id = u.id AND transaction_type = 'streak_bonus'), 0)::integer as streak_earnings
             FROM users u
             LEFT JOIN referrals r ON u.id = r.referrer_id
             WHERE u.id = $1
