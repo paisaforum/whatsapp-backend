@@ -7702,23 +7702,38 @@ router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
 
         const highThreshold = parseInt(settingsObj.ip_risk_high_threshold) || 7;
         const autoAction = settingsObj.ip_auto_action || 'flag';
-        const whitelist = settingsObj.ip_whitelist ? settingsObj.ip_whitelist.split(',').map(ip => ip.trim()) : [];
+        const whitelist = settingsObj.ip_whitelist ? settingsObj.ip_whitelist.split(',').map(ip => ip.trim()).filter(ip => ip) : [];
 
         if (autoAction === 'none') {
-            return res.json({ message: 'Auto-flagging is disabled', flagged: 0 });
+            return res.json({ message: 'Auto-flagging is disabled', flagged: 0, riskyIPs: 0 });
         }
 
-        // Find IPs with high risk
-        const riskyIPs = await pool.query(`
+        // Build query dynamically based on whitelist
+        let riskyIPsQuery = `
             SELECT 
                 registration_ip as ip,
                 COUNT(*) as user_count
             FROM users
             WHERE registration_ip IS NOT NULL
-            AND registration_ip NOT IN (${whitelist.map((_, i) => `$${i + 1}`).join(',') || 'NULL'})
+        `;
+
+        const queryParams = [];
+
+        // Add whitelist filter if not empty
+        if (whitelist.length > 0) {
+            const placeholders = whitelist.map((_, i) => `$${i + 1}`).join(',');
+            riskyIPsQuery += ` AND registration_ip NOT IN (${placeholders})`;
+            queryParams.push(...whitelist);
+        }
+
+        riskyIPsQuery += `
             GROUP BY registration_ip
-            HAVING COUNT(*) >= $${whitelist.length + 1}
-        `, [...whitelist, highThreshold]);
+            HAVING COUNT(*) >= $${queryParams.length + 1}
+        `;
+
+        queryParams.push(highThreshold);
+
+        const riskyIPs = await pool.query(riskyIPsQuery, queryParams);
 
         let flaggedCount = 0;
         const adminId = req.user.adminId;
@@ -7727,20 +7742,24 @@ router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
             const usersOnIP = await pool.query(`SELECT id FROM users WHERE registration_ip = $1 AND is_flagged = false`, [row.ip]);
 
             for (const user of usersOnIP.rows) {
+                const flagReason = `Auto-flagged: ${row.user_count} accounts from IP ${row.ip}`;
+
                 await pool.query(`
                     UPDATE users 
                     SET is_flagged = true, flag_reason = $1, flagged_at = NOW(), flagged_by = $2 
                     WHERE id = $3
-                `, [`Auto-flagged: ${row.user_count} accounts from IP ${row.ip}`, adminId, user.id]);
+                `, [flagReason, adminId, user.id]);
 
                 await pool.query(`
                     INSERT INTO user_flags (user_id, flagged_by, flag_type, flag_reason, ip_address, total_accounts_on_ip)
                     VALUES ($1, $2, 'ip_risk', $3, $4, $5)
-                `, [user.id, adminId, `Auto-flagged: ${row.user_count} accounts from same IP`, row.ip, row.user_count]);
+                `, [user.id, adminId, flagReason, row.ip, row.user_count]);
 
                 flaggedCount++;
             }
         }
+
+        console.log(`✅ Auto-flag complete: ${riskyIPs.rows.length} risky IPs, ${flaggedCount} users flagged`);
 
         res.json({
             message: `Auto-flagging complete`,
@@ -7749,9 +7768,10 @@ router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
         });
     } catch (error) {
         console.error('Error auto-flagging:', error);
-        res.status(500).json({ error: 'Failed to auto-flag users' });
+        res.status(500).json({ error: 'Failed to auto-flag users', details: error.message });
     }
 });
+
 
 // Disable/Enable user
 router.put('/admin/user-status/:userId', authenticateAdmin, async (req, res) => {
