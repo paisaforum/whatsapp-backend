@@ -142,7 +142,7 @@ const logMilestoneActivity = async (pool, userId, shares, bonus, totalShares, ne
 };
 
 const logStreakActivity = async (pool, userId, day, bonus, nextDayBonus = null) => {
-    const dayText = day === 1 ? 'check-in' : 'consecutive check-ins';
+    const dayText = day === 1 ? 'day' : 'consecutive days';
     const nextInfo = nextDayBonus ? ` | Day ${day + 1}: ${nextDayBonus} points` : '';
 
     await logActivity(
@@ -150,7 +150,7 @@ const logStreakActivity = async (pool, userId, day, bonus, nextDayBonus = null) 
         userId,
         'streak',
         `Day ${day} Streak Bonus`,
-        `Completed ${day} ${dayText} - Earned ${bonus} points${nextInfo}`,
+        `${day} ${dayText} streak - Earned ${bonus} points${nextInfo}`,
         bonus,
         { day, consecutive: day > 1, nextDayBonus }
     );
@@ -5929,77 +5929,90 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
 
 
 
-              // ✅ UPDATE STREAK FOR USER COMPLETION
-        try {
-            const today = new Date().toISOString().split('T')[0];
-            let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
+            // ✅ UPDATE STREAK FOR USER COMPLETION
+            try {
+                const today = new Date().toISOString().split('T')[0];
+                let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]);
 
-            if (streak.rows.length === 0) {
-                await pool.query(
-                    'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
-                    [userId, today]
-                );
-                
-                const day1Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day1_bonus']);
-                const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
-                
-                if (day1Bonus > 0) {
-                    await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
+                if (streak.rows.length === 0) {
                     await pool.query(
-                        'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                        [userId, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
+                        'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
+                        [userId, today]
                     );
-                }
-                
-                console.log(`🔥 User Completion: Created new streak for user ${userId}`);
-            } else {
-                const lastShareDate = streak.rows[0].last_share_date
-                    ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
-                    : null;
-                const currentStreak = streak.rows[0].current_streak;
-                
-                if (lastShareDate !== today) {
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-                    let newStreak = lastShareDate === yesterdayStr ? currentStreak + 1 : 1;
-                    
-                    const cycleDay = ((newStreak - 1) % 7) + 1;
-                    const settingKey = `streak_day${cycleDay}_bonus`;
-                    
-                    console.log(`🔥 User Completion: Streak ${newStreak} → Cycle Day ${cycleDay}`);
-                    
-                    const bonusSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [settingKey]);
-                    const streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
-                    
-                    console.log(`💰 Cycle Day ${cycleDay} bonus: ${streakBonus} points`);
-                    
-                    await pool.query(
-                        `UPDATE user_streaks 
+                    const day1Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day1_bonus']);
+                    const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
+
+                    if (day1Bonus > 0) {
+                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, userId]);
+                        await pool.query(
+                            'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                            [userId, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
+                        );
+                    }
+
+                    console.log(`🔥 User Completion: Created new streak for user ${userId}`);
+                } else {
+                    const lastShareDate = streak.rows[0].last_share_date
+                        ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
+                        : null;
+                    const currentStreak = streak.rows[0].current_streak;
+
+                    if (lastShareDate !== today) {
+                        const yesterday = new Date();
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+                        let newStreak = lastShareDate === yesterdayStr ? currentStreak + 1 : 1;
+
+                        const cycleDay = ((newStreak - 1) % 7) + 1;
+                        const settingKey = `streak_day${cycleDay}_bonus`;
+
+                        console.log(`🔥 User Completion: Streak ${newStreak} → Cycle Day ${cycleDay}`);
+
+                        const bonusSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [settingKey]);
+                        const streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
+
+                        console.log(`💰 Cycle Day ${cycleDay} bonus: ${streakBonus} points`);
+
+                        await pool.query(
+                            `UPDATE user_streaks 
                          SET current_streak = $1, 
                              longest_streak = GREATEST(longest_streak, $1),
                              last_share_date = $2, 
                              total_streak_bonuses = total_streak_bonuses + $3,
                              updated_at = NOW()
                          WHERE user_id = $4`,
-                        [newStreak, today, streakBonus, userId]
-                    );
-                    
-                    if (streakBonus > 0) {
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
-                        await pool.query(
-                            'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                            [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                            [newStreak, today, streakBonus, userId]
                         );
+
+                        if (streakBonus > 0) {
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+
+                            // Log point transaction
+                            await pool.query(
+                                'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                            );
+
+                            // Log activity
+                            const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
+                            const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+                            const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
+                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+
+                            await pool.query(
+                                'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
+                                [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                            );
+                        }
+
+                        console.log(`🔥 User Completion: User ${userId} streak day ${newStreak}, earned ${streakBonus} bonus`);
                     }
-                    
-                    console.log(`🔥 User Completion: User ${userId} streak day ${newStreak}, earned ${streakBonus} bonus`);
                 }
+            } catch (streakError) {
+                console.error('User completion streak error:', streakError);
             }
-        } catch (streakError) {
-            console.error('User completion streak error:', streakError);
-        }
 
 
 
@@ -6010,7 +6023,7 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
         await logGlobalTaskActivity(pool, userId, assignment.lead_phone, pointsPerLead, assignment.lead_id, instantAward);
 
 
-      
+
 
 
         res.json({
@@ -6717,10 +6730,23 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, async (req, 
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, submission.user_id]);
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+
+                            // Log point transaction
+                            await pool.query(
+                                'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                            );
+
+                            // Log activity
+                            const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
+                            const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+                            const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
+                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+
                             await pool.query(
                                 'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                                [submission.user_id, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                                [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
                             );
                         }
 
@@ -8264,7 +8290,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
             }
 
 
-             // ✅ UPDATE STREAK FOR PERSONAL SHARE ADMIN APPROVAL
+            // ✅ UPDATE STREAK FOR PERSONAL SHARE ADMIN APPROVAL
             try {
                 const today = new Date().toISOString().split('T')[0];
                 let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [sub.user_id]);
@@ -8274,10 +8300,10 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                         'INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_share_date) VALUES ($1, 1, 1, $2)',
                         [sub.user_id, today]
                     );
-                    
+
                     const day1Settings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['streak_day1_bonus']);
                     const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
-                    
+
                     if (day1Bonus > 0) {
                         await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, sub.user_id]);
                         await pool.query(
@@ -8285,31 +8311,31 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                             [sub.user_id, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
                         );
                     }
-                    
+
                     console.log(`🔥 Personal Share Admin: Created new streak for user ${sub.user_id}`);
                 } else {
                     const lastShareDate = streak.rows[0].last_share_date
                         ? new Date(streak.rows[0].last_share_date).toISOString().split('T')[0]
                         : null;
                     const currentStreak = streak.rows[0].current_streak;
-                    
+
                     if (lastShareDate !== today) {
                         const yesterday = new Date();
                         yesterday.setDate(yesterday.getDate() - 1);
                         const yesterdayStr = yesterday.toISOString().split('T')[0];
 
                         let newStreak = lastShareDate === yesterdayStr ? currentStreak + 1 : 1;
-                        
+
                         const cycleDay = ((newStreak - 1) % 7) + 1;
                         const settingKey = `streak_day${cycleDay}_bonus`;
-                        
+
                         console.log(`🔥 Personal Share Admin: Streak ${newStreak} → Cycle Day ${cycleDay}`);
-                        
+
                         const bonusSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [settingKey]);
                         const streakBonus = parseInt(bonusSettings.rows[0]?.setting_value) || 0;
-                        
+
                         console.log(`💰 Cycle Day ${cycleDay} bonus: ${streakBonus} points`);
-                        
+
                         await pool.query(
                             `UPDATE user_streaks 
                              SET current_streak = $1, 
@@ -8320,15 +8346,28 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                              WHERE user_id = $4`,
                             [newStreak, today, streakBonus, sub.user_id]
                         );
-                        
+
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, sub.user_id]);
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+
+                            // Log point transaction
+                            await pool.query(
+                                'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                            );
+
+                            // Log activity
+                            const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
+                            const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
+                            const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
+                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+
                             await pool.query(
                                 'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                                [sub.user_id, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                                [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
                             );
                         }
-                        
+
                         console.log(`🔥 Personal Share Admin: User ${sub.user_id} streak day ${newStreak}, earned ${streakBonus} bonus`);
                     }
                 }
@@ -8337,7 +8376,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
             }
 
 
-            
+
         } else if (action === 'reject') {
             // Log rejection in activity
             const shortReason = adminNotes.length > 30 ? adminNotes.substring(0, 30) + '...' : adminNotes;
