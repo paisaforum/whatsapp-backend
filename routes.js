@@ -5544,93 +5544,108 @@ router.put('/admin/feature-settings/:key', authenticateAdmin, async (req, res) =
     }
 });
 
-router.get('/admin/feature-analytics', authenticateAdmin, async (req, res) => {
+router.get('/admin/feature-analytics', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // Activity stats
-        const activityStats = await pool.query(
-            `SELECT 
-                COUNT(DISTINCT activity_id) as total_activities,
-                COUNT(*) as total_participations,
-                SUM(points_earned) as total_points_awarded
-             FROM activity_participations`
-        );
+        // 1. ACTIVITIES ANALYTICS
+        const activitiesData = await pool.query(`
+            SELECT 
+                COUNT(DISTINCT a.id) as total_activities,
+                COUNT(DISTINCT CASE WHEN a.status = 'active' THEN a.id END) as active_activities,
+                COALESCE(SUM(ap.points_earned), 0)::integer as total_points_awarded,
+                COUNT(ap.id) as total_participations
+            FROM activities a
+            LEFT JOIN activity_participations ap ON a.id = ap.activity_id
+        `);
 
-        // Spin stats
-        const spinStats = await pool.query(
-            `SELECT 
-                SUM(total_spins) as total_spins,
-                SUM(total_won) as total_prizes,
-                COUNT(*) as active_spinners
-             FROM user_spins WHERE total_spins > 0`
-        );
+        // 2. SPIN ANALYTICS
+        const spinData = await pool.query(`
+            SELECT 
+                COUNT(*) as total_spins,
+                COUNT(CASE WHEN spin_type = 'free' THEN 1 END) as free_spins,
+                COUNT(CASE WHEN spin_type = 'bonus' THEN 1 END) as bonus_spins,
+                COALESCE(SUM(points_won), 0)::integer as points_won
+            FROM spin_history
+        `);
 
-        // Referral stats
-        const referralStats = await pool.query(
-            `SELECT 
+        // 3. REFERRAL ANALYTICS
+        const referralData = await pool.query(`
+            SELECT 
                 COUNT(*) as total_referrals,
-                COUNT(DISTINCT referrer_id) as active_referrers,
-                SUM(total_commission_earned) as total_commission
-             FROM referrals WHERE signup_bonus_awarded = true`
-        );
+                COUNT(CASE WHEN status = 'completed' THEN 1 END) as active_referrals,
+                COALESCE(SUM(signup_bonus_earned), 0)::integer as signup_bonuses,
+                COALESCE(SUM(total_commission_earned), 0)::integer as commission_paid
+            FROM referrals
+        `);
 
-        // Streak stats
-        const streakStats = await pool.query(
-            `SELECT 
-                COUNT(*) as total_users_with_streaks,
-                AVG(current_streak) as avg_streak,
-                MAX(current_streak) as max_streak,
-                SUM(total_streak_bonuses) as total_bonuses_awarded
-             FROM user_streaks WHERE current_streak > 0`
-        );
+        // 4. STREAK ANALYTICS
+        const streakData = await pool.query(`
+            SELECT 
+                COUNT(CASE WHEN current_streak > 0 THEN 1 END) as active_streaks,
+                COALESCE(SUM(total_streak_bonuses), 0)::integer as total_points_awarded,
+                MAX(longest_streak) as longest_streak
+            FROM user_streaks
+        `);
 
-        // Milestone stats
-        const milestoneStats = await pool.query(
-            `SELECT 
-                COUNT(*) as total_milestones_achieved,
-                SUM(bonus_awarded) as total_bonuses
-             FROM user_milestones`
-        );
+        // Get total streak claims from activity_log
+        const streakClaims = await pool.query(`
+            SELECT COUNT(*) as total_claimed
+            FROM activity_log
+            WHERE activity_type = 'streak'
+        `);
 
-        // Format response to match frontend expectations
-        res.json({
+        // 5. MILESTONE ANALYTICS
+        const milestoneData = await pool.query(`
+            SELECT 
+                COUNT(*) as total_achieved,
+                COALESCE(SUM(bonus_awarded), 0)::integer as points_awarded,
+                COUNT(DISTINCT user_id) as users_with_milestones
+            FROM user_milestones
+        `);
+
+        // Construct response
+        const analytics = {
             activities: {
-                total: parseInt(activityStats.rows[0]?.total_activities) || 0,
-                active: 0, // You can add this query if needed
-                totalParticipations: parseInt(activityStats.rows[0]?.total_participations) || 0,
-                pointsAwarded: parseInt(activityStats.rows[0]?.total_points_awarded) || 0
+                total: parseInt(activitiesData.rows[0]?.total_activities) || 0,
+                active: parseInt(activitiesData.rows[0]?.active_activities) || 0,
+                totalParticipations: parseInt(activitiesData.rows[0]?.total_participations) || 0,
+                pointsAwarded: activitiesData.rows[0]?.total_points_awarded || 0
             },
             spins: {
-                totalSpins: parseInt(spinStats.rows[0]?.total_spins) || 0,
-                freeSpins: 0, // Add if you track this separately
-                bonusSpins: 0, // Add if you track this separately
-                pointsWon: parseInt(spinStats.rows[0]?.total_prizes) || 0
+                totalSpins: parseInt(spinData.rows[0]?.total_spins) || 0,
+                freeSpins: parseInt(spinData.rows[0]?.free_spins) || 0,
+                bonusSpins: parseInt(spinData.rows[0]?.bonus_spins) || 0,
+                pointsWon: spinData.rows[0]?.points_won || 0
             },
             referrals: {
-                totalReferrals: parseInt(referralStats.rows[0]?.total_referrals) || 0,
-                activeReferrals: parseInt(referralStats.rows[0]?.active_referrers) || 0,
-                pointsAwarded: 0, // Calculate signup bonuses if needed
-                commissionPaid: parseInt(referralStats.rows[0]?.total_commission) || 0
+                totalReferrals: parseInt(referralData.rows[0]?.total_referrals) || 0,
+                activeReferrals: parseInt(referralData.rows[0]?.active_referrals) || 0,
+                pointsAwarded: referralData.rows[0]?.signup_bonuses || 0,
+                commissionPaid: referralData.rows[0]?.commission_paid || 0
             },
             streaks: {
-                activeStreaks: parseInt(streakStats.rows[0]?.total_users_with_streaks) || 0,
-                totalClaimed: 0, // Add if you track claims
-                pointsAwarded: parseInt(streakStats.rows[0]?.total_bonuses_awarded) || 0,
-                longestStreak: parseInt(streakStats.rows[0]?.max_streak) || 0
+                activeStreaks: parseInt(streakData.rows[0]?.active_streaks) || 0,
+                totalClaimed: parseInt(streakClaims.rows[0]?.total_claimed) || 0,
+                pointsAwarded: streakData.rows[0]?.total_points_awarded || 0,
+                longestStreak: parseInt(streakData.rows[0]?.longest_streak) || 0
             },
             milestones: {
-                totalAchieved: parseInt(milestoneStats.rows[0]?.total_milestones_achieved) || 0,
-                pointsAwarded: parseInt(milestoneStats.rows[0]?.total_bonuses) || 0,
-                usersWithMilestones: 0 // Add distinct user count if needed
+                totalAchieved: parseInt(milestoneData.rows[0]?.total_achieved) || 0,
+                pointsAwarded: milestoneData.rows[0]?.points_awarded || 0,
+                usersWithMilestones: parseInt(milestoneData.rows[0]?.users_with_milestones) || 0
             }
-        });
+        };
+
+        console.log('📊 Feature Analytics fetched successfully');
+
+        res.json(analytics);
+
     } catch (error) {
         console.error('Error fetching feature analytics:', error);
         res.status(500).json({ error: 'Failed to fetch analytics' });
     }
 });
-
 
 
 
