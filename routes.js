@@ -2183,6 +2183,12 @@ router.post('/admin/create-admin', authenticateAdmin, async (req, res) => {
             return res.status(403).json({ error: 'Access denied' });
         }
 
+        if (req.body.role && req.body.role === 'super_admin') {
+            return res.status(403).json({
+                error: 'Cannot create super admin accounts. Only one super admin allowed.'
+            });
+        }
+
         if (!username || !password) {
             return res.status(400).json({ error: 'Username and password required' });
         }
@@ -2397,6 +2403,20 @@ router.put('/admin/admins/:id', authenticateAdmin, checkPermission('manage_admin
             // Only super_admin can change roles
             if (req.admin.role !== 'super_admin') {
                 return res.status(403).json({ error: 'Only super admin can change roles' });
+            }
+
+            // ⚠️ ADD THIS BLOCK - Prevent changing TO super_admin
+            if (role === 'super_admin') {
+                return res.status(403).json({
+                    error: 'Cannot change role to super admin. Only one super admin allowed.'
+                });
+            }
+
+            // ⚠️ ADD THIS - Prevent changing FROM super_admin
+            if (adminCheck.rows[0].role === 'super_admin') {
+                return res.status(403).json({
+                    error: 'Cannot modify super admin role'
+                });
             }
             updates.push(`role = $${paramCount}`);
             values.push(role);
