@@ -1774,34 +1774,66 @@ const verify2FACode = async (pool, adminId, code) => {
     });
 };
 
-// ========================================
-// FILE MANAGER ROUTES (SUPER ADMIN ONLY)
-// ========================================
+// ============================================
+// FILE MANAGER ROUTES (WITH DATABASE CLEANUP)
+// ============================================
 
-// Get list of files in uploads folder
-router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, async (req, res) => {
+const fs = require('fs');
+const path = require('path');
+
+// Helper: Get file size
+const getFileSize = (filePath) => {
     try {
-        const pool = req.app.get('db');
+        const stats = fs.statSync(filePath);
+        return stats.size;
+    } catch {
+        return 0;
+    }
+};
 
-        // Check if super admin
-        const adminCheck = await pool.query(
-            'SELECT role FROM admins WHERE id = $1',
-            [req.admin.adminId]
-        );
+// Helper: Clean up database references when file is deleted
+const cleanupDatabaseReferences = async (pool, folder, filename) => {
+    const filePath = `/uploads/${folder}/${filename}`;
 
-        if (adminCheck.rows[0].role !== 'super_admin') {
-            return res.status(403).json({ error: 'Access denied' });
+    try {
+        // Clean up banners table
+        if (folder === 'banners') {
+            await pool.query(`UPDATE banners SET image_url = NULL WHERE image_url = $1`, [filePath]);
+            await pool.query(`DELETE FROM banners WHERE image_url = $1 AND title IS NULL`, [filePath]);
         }
 
-        const fs = require('fs');
-        const path = require('path');
+        // Clean up offers table
+        if (folder === 'offers') {
+            await pool.query(`UPDATE offers SET image_url = NULL WHERE image_url = $1`, [filePath]);
+            await pool.query(`DELETE FROM offers WHERE image_url = $1 AND title IS NULL`, [filePath]);
+        }
 
-        const uploadsDir = './uploads';
-        const folders = ['banners', 'offers', 'submissions']; // ← ADDED 'social-icons'
+        // Clean up activities table
+        if (folder === 'activities' || folder === 'banners') {
+            await pool.query(`UPDATE activities SET banner_image_url = NULL WHERE banner_image_url = $1`, [filePath]);
+            await pool.query(`UPDATE activities SET detail_image_url = NULL WHERE detail_image_url = $1`, [filePath]);
+        }
+
+        // Clean up submissions (usually these shouldn't be deleted, but just in case)
+        if (folder === 'submissions') {
+            await pool.query(`UPDATE submissions SET screenshot_url = NULL WHERE screenshot_url = $1`, [filePath]);
+        }
+
+        console.log(`✅ Cleaned up DB references for: ${filePath}`);
+    } catch (error) {
+        console.error(`Error cleaning up DB for ${filePath}:`, error);
+    }
+};
+
+// List all files from all folders
+router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
+    try {
+        const uploadsDir = path.join(__dirname, 'public', 'uploads');
+        const folders = ['banners', 'offers', 'submissions', 'activities'];
 
         const filesByFolder = {};
-        let totalSize = 0;
         let totalFiles = 0;
+        let totalSize = 0;
 
         for (const folder of folders) {
             const folderPath = path.join(uploadsDir, folder);
@@ -1812,71 +1844,48 @@ router.get('/admin/file-manager/list', authenticateAdmin, requireSuperAdmin, asy
             }
 
             const files = fs.readdirSync(folderPath);
+            filesByFolder[folder] = files
+                .filter(file => !file.startsWith('.')) // Ignore hidden files
+                .map(filename => {
+                    const filePath = path.join(folderPath, filename);
+                    const size = getFileSize(filePath);
+                    totalSize += size;
+                    totalFiles++;
 
-            filesByFolder[folder] = files.map(filename => {
-                const filePath = path.join(folderPath, filename);
-                const stats = fs.statSync(filePath);
-
-                totalSize += stats.size;
-                totalFiles++;
-
-                return {
-                    filename,
-                    folder,
-                    size: stats.size,
-                    created: stats.birthtime,
-                    modified: stats.mtime,
-                    url: `/uploads/${folder}/${filename}`
-                };
-            }).sort((a, b) => b.modified - a.modified); // Newest first
+                    return {
+                        filename,
+                        url: `/uploads/${folder}/${filename}`,
+                        size,
+                        folder
+                    };
+                })
+                .sort((a, b) => b.filename.localeCompare(a.filename)); // Newest first
         }
 
-        res.json({
-            files: filesByFolder,
-            stats: {
-                totalFiles,
-                totalSize,
-                bannerCount: filesByFolder.banners.length,
-                offerCount: filesByFolder.offers.length,
-                submissionCount: filesByFolder.submissions.length,
+        const stats = {
+            totalFiles,
+            totalSize,
+            bannerCount: filesByFolder.banners?.length || 0,
+            offerCount: filesByFolder.offers?.length || 0,
+            submissionCount: filesByFolder.submissions?.length || 0,
+            activityCount: filesByFolder.activities?.length || 0
+        };
 
-            }
-        });
-
+        res.json({ files: filesByFolder, stats });
     } catch (error) {
-        console.error('File manager list error:', error);
+        console.error('Error listing files:', error);
         res.status(500).json({ error: 'Failed to list files' });
     }
 });
 
-// Delete a file
-router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, requireSuperAdmin, async (req, res) => {
+// Delete single file
+router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-
-        // Check if super admin
-        const adminCheck = await pool.query(
-            'SELECT role FROM admins WHERE id = $1',
-            [req.admin.adminId]
-        );
-
-        if (adminCheck.rows[0].role !== 'super_admin') {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-
-        const fs = require('fs');
-        const path = require('path');
         const { folder, filename } = req.params;
 
-        // Validate folder
-        const allowedFolders = ['banners', 'offers', 'submissions'];
-        if (!allowedFolders.includes(folder)) {
-            return res.status(400).json({ error: 'Invalid folder' });
-        }
+        const filePath = path.join(__dirname, 'public', 'uploads', folder, filename);
 
-        const filePath = path.join('./uploads', folder, filename);
-
-        // Check if file exists
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
         }
@@ -1884,68 +1893,154 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
         // Delete file
         fs.unlinkSync(filePath);
 
-        // Log activity
-        await logAdminActivity(pool, req.admin.adminId, 'delete_file', `Deleted file: ${folder}/${filename}`);
+        // Clean up database
+        await cleanupDatabaseReferences(pool, folder, filename);
 
+        console.log(`✅ Deleted file: ${folder}/${filename}`);
         res.json({ message: 'File deleted successfully' });
-
     } catch (error) {
-        console.error('File delete error:', error);
+        console.error('Error deleting file:', error);
         res.status(500).json({ error: 'Failed to delete file' });
     }
 });
 
 // Bulk delete files
-router.post('/admin/file-manager/bulk-delete', authenticateAdmin, requireSuperAdmin, async (req, res) => {
+router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-
-        // Check if super admin
-        const adminCheck = await pool.query(
-            'SELECT role FROM admins WHERE id = $1',
-            [req.admin.adminId]
-        );
-
-        if (adminCheck.rows[0].role !== 'super_admin') {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-
-        const fs = require('fs');
-        const path = require('path');
-        const { files } = req.body; // Array of {folder, filename}
+        const { files } = req.body; // Array of "folder/filename" strings
 
         if (!Array.isArray(files) || files.length === 0) {
-            return res.status(400).json({ error: 'No files specified' });
+            return res.status(400).json({ error: 'No files provided' });
         }
 
-        let deletedCount = 0;
-        const allowedFolders = ['banners', 'offers', 'submissions'];
+        let deleted = 0;
+        let failed = 0;
 
-        for (const file of files) {
-            if (!allowedFolders.includes(file.folder)) continue;
+        for (const fileId of files) {
+            const [folder, filename] = fileId.split('/');
+            const filePath = path.join(__dirname, 'public', 'uploads', folder, filename);
 
-            const filePath = path.join('./uploads', file.folder, file.filename);
-
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-                deletedCount++;
+            try {
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    await cleanupDatabaseReferences(pool, folder, filename);
+                    deleted++;
+                } else {
+                    failed++;
+                }
+            } catch (error) {
+                console.error(`Error deleting ${fileId}:`, error);
+                failed++;
             }
         }
 
-        // Log activity
-        await logAdminActivity(pool, req.admin.adminId, 'bulk_delete_files', `Bulk deleted ${deletedCount} files`);
-
+        console.log(`✅ Bulk delete: ${deleted} deleted, ${failed} failed`);
         res.json({
-            message: `Successfully deleted ${deletedCount} files`,
-            deletedCount
+            message: `Deleted ${deleted} file(s)`,
+            deleted,
+            failed
         });
-
     } catch (error) {
-        console.error('Bulk delete error:', error);
-        res.status(500).json({ error: 'Failed to delete files' });
+        console.error('Error bulk deleting:', error);
+        res.status(500).json({ error: 'Failed to bulk delete files' });
     }
 });
 
+// Clear entire folder
+router.post('/admin/file-manager/clear-folder', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { folder } = req.body;
+
+        const folderPath = path.join(__dirname, 'public', 'uploads', folder);
+
+        if (!fs.existsSync(folderPath)) {
+            return res.status(404).json({ error: 'Folder not found' });
+        }
+
+        const files = fs.readdirSync(folderPath).filter(f => !f.startsWith('.'));
+
+        let deleted = 0;
+        for (const filename of files) {
+            const filePath = path.join(folderPath, filename);
+            try {
+                fs.unlinkSync(filePath);
+                await cleanupDatabaseReferences(pool, folder, filename);
+                deleted++;
+            } catch (error) {
+                console.error(`Error deleting ${filename}:`, error);
+            }
+        }
+
+        console.log(`✅ Cleared folder ${folder}: ${deleted} files deleted`);
+        res.json({
+            message: `Cleared ${folder}: ${deleted} files deleted`,
+            deleted
+        });
+    } catch (error) {
+        console.error('Error clearing folder:', error);
+        res.status(500).json({ error: 'Failed to clear folder' });
+    }
+});
+
+// Find and clean orphaned database records (files deleted but DB still references them)
+router.post('/admin/file-manager/cleanup-orphaned', authenticateAdmin, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const uploadsDir = path.join(__dirname, 'public', 'uploads');
+
+        let cleaned = 0;
+
+        // Check banners
+        const banners = await pool.query(`SELECT id, image_url FROM banners WHERE image_url IS NOT NULL`);
+        for (const banner of banners.rows) {
+            const filePath = path.join(__dirname, 'public', banner.image_url);
+            if (!fs.existsSync(filePath)) {
+                await pool.query(`UPDATE banners SET image_url = NULL WHERE id = $1`, [banner.id]);
+                cleaned++;
+            }
+        }
+
+        // Check offers
+        const offers = await pool.query(`SELECT id, image_url FROM offers WHERE image_url IS NOT NULL`);
+        for (const offer of offers.rows) {
+            const filePath = path.join(__dirname, 'public', offer.image_url);
+            if (!fs.existsSync(filePath)) {
+                await pool.query(`UPDATE offers SET image_url = NULL WHERE id = $1`, [offer.id]);
+                cleaned++;
+            }
+        }
+
+        // Check activities
+        const activities = await pool.query(`SELECT id, banner_image_url, detail_image_url FROM activities WHERE banner_image_url IS NOT NULL OR detail_image_url IS NOT NULL`);
+        for (const activity of activities.rows) {
+            if (activity.banner_image_url) {
+                const filePath = path.join(__dirname, 'public', activity.banner_image_url);
+                if (!fs.existsSync(filePath)) {
+                    await pool.query(`UPDATE activities SET banner_image_url = NULL WHERE id = $1`, [activity.id]);
+                    cleaned++;
+                }
+            }
+            if (activity.detail_image_url) {
+                const filePath = path.join(__dirname, 'public', activity.detail_image_url);
+                if (!fs.existsSync(filePath)) {
+                    await pool.query(`UPDATE activities SET detail_image_url = NULL WHERE id = $1`, [activity.id]);
+                    cleaned++;
+                }
+            }
+        }
+
+        console.log(`✅ Cleaned ${cleaned} orphaned DB references`);
+        res.json({
+            message: `Cleaned ${cleaned} orphaned references`,
+            cleaned
+        });
+    } catch (error) {
+        console.error('Error cleaning orphaned records:', error);
+        res.status(500).json({ error: 'Failed to cleanup orphaned records' });
+    }
+});
 
 // ==================== ADMIN MANAGEMENT ROUTES ====================
 
