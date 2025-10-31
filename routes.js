@@ -1778,9 +1778,6 @@ const verify2FACode = async (pool, adminId, code) => {
 // FILE MANAGER ROUTES (WITH DATABASE CLEANUP)
 // ============================================
 
-const fs = require('fs');
-const path = require('path');
-
 // Helper: Get file size
 const getFileSize = (filePath) => {
     try {
