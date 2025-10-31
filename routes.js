@@ -7580,7 +7580,7 @@ router.post('/admin/flag-user', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, flagReason, flagType = 'manual', ipAddress, totalAccountsOnIp } = req.body;
-        const adminId = req.user.adminId;
+        const adminId = req.admin.adminId;
 
         // Flag the user
         await pool.query(`
@@ -7663,7 +7663,7 @@ router.post('/admin/resolve-flag', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { userId, action, notes } = req.body; // action: 'cleared', 'disabled', 'whitelisted'
-        const adminId = req.user.adminId;
+        const adminId = req.admin.adminId;
 
         // Update user based on action
         if (action === 'disabled') {
@@ -7736,7 +7736,7 @@ router.post('/admin/auto-flag-ip-risk', authenticateAdmin, async (req, res) => {
         const riskyIPs = await pool.query(riskyIPsQuery, queryParams);
 
         let flaggedCount = 0;
-        const adminId = req.user.adminId;
+        const adminId = req.admin.adminId;
 
         for (const row of riskyIPs.rows) {
             const usersOnIP = await pool.query(`SELECT id FROM users WHERE registration_ip = $1 AND is_flagged = false`, [row.ip]);
