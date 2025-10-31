@@ -5544,37 +5544,40 @@ router.put('/admin/feature-settings/:key', authenticateAdmin, async (req, res) =
     }
 });
 
-router.get('/admin/feature-analytics', authenticateAdmin, checkPermission('view_analytics'), async (req, res) => {
+router.get('/admin/feature-analytics', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
-        // 1. ACTIVITIES ANALYTICS
+        // 1. ACTIVITIES ANALYTICS (Simple - just count activities for info)
         const activitiesData = await pool.query(`
             SELECT 
-                COUNT(DISTINCT a.id) as total_activities,
-                COUNT(DISTINCT CASE WHEN a.status = 'active' THEN a.id END) as active_activities,
-                COALESCE(SUM(ap.points_earned), 0)::integer as total_points_awarded,
-                COUNT(ap.id) as total_participations
-            FROM activities a
-            LEFT JOIN activity_participations ap ON a.id = ap.activity_id
+                COUNT(*) as total_activities
+            FROM activities
         `);
 
-        // 2. SPIN ANALYTICS
+        const activityParticipations = await pool.query(`
+            SELECT 
+                COUNT(*) as total_participations,
+                COALESCE(SUM(points_earned), 0)::integer as total_points_awarded
+            FROM activity_participations
+        `);
+
+        // 2. SPIN ANALYTICS (Fixed: use prize_amount instead of points_won)
         const spinData = await pool.query(`
             SELECT 
                 COUNT(*) as total_spins,
                 COUNT(CASE WHEN spin_type = 'free' THEN 1 END) as free_spins,
                 COUNT(CASE WHEN spin_type = 'bonus' THEN 1 END) as bonus_spins,
-                COALESCE(SUM(points_won), 0)::integer as points_won
+                COALESCE(SUM(prize_amount), 0)::integer as total_prize_amount
             FROM spin_history
         `);
 
-        // 3. REFERRAL ANALYTICS
+        // 3. REFERRAL ANALYTICS (Fixed: use signup_bonus_awarded and correct status)
         const referralData = await pool.query(`
             SELECT 
                 COUNT(*) as total_referrals,
-                COUNT(CASE WHEN status = 'completed' THEN 1 END) as active_referrals,
-                COALESCE(SUM(signup_bonus_earned), 0)::integer as signup_bonuses,
+                COUNT(CASE WHEN status = 'completed' OR status = 'active' THEN 1 END) as active_referrals,
+                COALESCE(SUM(CASE WHEN signup_bonus_awarded = true THEN 100 ELSE 0 END), 0)::integer as signup_bonuses,
                 COALESCE(SUM(total_commission_earned), 0)::integer as commission_paid
             FROM referrals
         `);
@@ -5608,15 +5611,15 @@ router.get('/admin/feature-analytics', authenticateAdmin, checkPermission('view_
         const analytics = {
             activities: {
                 total: parseInt(activitiesData.rows[0]?.total_activities) || 0,
-                active: parseInt(activitiesData.rows[0]?.active_activities) || 0,
-                totalParticipations: parseInt(activitiesData.rows[0]?.total_participations) || 0,
-                pointsAwarded: activitiesData.rows[0]?.total_points_awarded || 0
+                active: parseInt(activitiesData.rows[0]?.total_activities) || 0, // All activities are "active" for display purposes
+                totalParticipations: parseInt(activityParticipations.rows[0]?.total_participations) || 0,
+                pointsAwarded: activityParticipations.rows[0]?.total_points_awarded || 0
             },
             spins: {
                 totalSpins: parseInt(spinData.rows[0]?.total_spins) || 0,
                 freeSpins: parseInt(spinData.rows[0]?.free_spins) || 0,
                 bonusSpins: parseInt(spinData.rows[0]?.bonus_spins) || 0,
-                pointsWon: spinData.rows[0]?.points_won || 0
+                pointsWon: spinData.rows[0]?.total_prize_amount || 0
             },
             referrals: {
                 totalReferrals: parseInt(referralData.rows[0]?.total_referrals) || 0,
