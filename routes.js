@@ -5301,6 +5301,19 @@ router.get('/admin/activities/:id/stats', authenticateAdmin, async (req, res) =>
     }
 });
 
+// Upload activity banner
+router.post('/admin/upload-activity-banner', authenticateAdmin, uploadBanner.single('banner'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const url = '/uploads/banners/' + req.file.filename;
+        console.log('✅ Activity banner uploaded:', url);
+        res.json({ url });
+    } catch (error) {
+        console.error('Error uploading activity banner:', error);
+        res.status(500).json({ error: 'Failed to upload banner' });
+    }
+});
+
 // ==================== ADMIN SETTINGS ROUTES ====================
 
 // Get all feature settings - USE OLD KEYS
