@@ -5045,60 +5045,6 @@ router.get('/activity/:id', authenticateUser, async (req, res) => {
     }
 });
 
-// Participate in activity
-router.post('/participate-activity', authenticateUser, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const { userId, activityId } = req.body;
-
-        // Check if activity exists
-        const activity = await pool.query('SELECT * FROM activities WHERE id = $1', [activityId]);
-        if (activity.rows.length === 0) {
-            return res.status(404).json({ error: 'Activity not found' });
-        }
-
-        // Check if already participated
-        const participated = await pool.query(
-            'SELECT * FROM activity_participations WHERE user_id = $1 AND activity_id = $2',
-            [userId, activityId]
-        );
-
-        if (participated.rows.length >= activity.rows[0].max_participations) {
-            return res.status(400).json({ error: 'Maximum participations reached' });
-        }
-
-        // Create participation
-        await pool.query(
-            'INSERT INTO activity_participations (user_id, activity_id, points_earned, completed) VALUES ($1, $2, $3, $4)',
-            [userId, activityId, activity.rows[0].points_reward, true]
-        );
-
-        // Award points
-        await pool.query(
-            'UPDATE users SET points = points + $1 WHERE id = $2',
-            [activity.rows[0].points_reward, userId]
-        );
-
-        // ✅ ADD THIS: Log generic activity
-        await logActivity(
-            pool,
-            userId,
-            'task_completed',
-            'Task Completed',
-            `Completed task and earned ${activity.rows[0].points_reward} points`,
-            activity.rows[0].points_reward,
-            { activityId: activityId }
-        );
-
-        res.json({
-            message: 'Activity completed!',
-            pointsEarned: activity.rows[0].points_reward
-        });
-    } catch (error) {
-        console.error('Error participating in activity:', error);
-        res.status(500).json({ error: 'Failed to participate' });
-    }
-});
 
 // Get user's activity participations
 router.get('/user-activities/:userId', authenticateUser, async (req, res) => {
@@ -5160,6 +5106,7 @@ router.get('/admin/activities', authenticateAdmin, async (req, res) => {
 });
 
 // Create activity
+// Create activity
 router.post('/admin/activities', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
@@ -5167,6 +5114,7 @@ router.post('/admin/activities', authenticateAdmin, async (req, res) => {
             title,
             description,
             bannerImageUrl,
+            detailImageUrl,
             activityType,
             pointsReward,
             startDate,
@@ -5177,12 +5125,22 @@ router.post('/admin/activities', authenticateAdmin, async (req, res) => {
 
         const result = await pool.query(
             `INSERT INTO activities (
-                title, description, banner_image_url, activity_type, 
-                points_reward, start_date, end_date, max_participations, display_order
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-            [title, description, bannerImageUrl, activityType, pointsReward, startDate, endDate, maxParticipations, displayOrder || 0]
+        title, description, banner_image_url, detail_image_url, activity_type, 
+        points_reward, start_date, end_date, max_participations, display_order
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+            [
+                title,
+                description || '',
+                bannerImageUrl || '',
+                detailImageUrl || null,      // ✅ NEW
+                activityType || 'promotion',
+                pointsReward || 0,
+                startDate || null,
+                endDate || null,
+                maxParticipations || 1,
+                displayOrder || 0
+            ]
         );
-
         await logAdminActivity(pool, req.admin.adminId, 'create_activity', `Created activity: ${title}`);
 
         res.json({ message: 'Activity created successfully', activity: result.rows[0] });
@@ -5201,6 +5159,7 @@ router.put('/admin/activities/:id', authenticateAdmin, async (req, res) => {
             title,
             description,
             bannerImageUrl,
+            detailImageUrl,
             activityType,
             pointsReward,
             startDate,
@@ -5212,12 +5171,25 @@ router.put('/admin/activities/:id', authenticateAdmin, async (req, res) => {
 
         const result = await pool.query(
             `UPDATE activities 
-             SET title = $1, description = $2, banner_image_url = $3, 
-                 activity_type = $4, points_reward = $5, start_date = $6, 
-                 end_date = $7, max_participations = $8, display_order = $9,
-                 is_active = $10, updated_at = NOW()
-             WHERE id = $11 RETURNING *`,
-            [title, description, bannerImageUrl, activityType, pointsReward, startDate, endDate, maxParticipations, displayOrder, isActive, id]
+     SET title = $1, description = $2, banner_image_url = $3, 
+         detail_image_url = $4, activity_type = $5, points_reward = $6, 
+         start_date = $7, end_date = $8, max_participations = $9, 
+         display_order = $10, is_active = $11, updated_at = NOW()
+     WHERE id = $12 RETURNING *`,
+            [
+                title,
+                description || '',
+                bannerImageUrl || '',
+                detailImageUrl || null,      // ✅ NEW
+                activityType || 'promotion',
+                pointsReward || 0,
+                startDate || null,
+                endDate || null,
+                maxParticipations || 1,
+                displayOrder || 0,
+                isActive !== false,
+                id
+            ]
         );
 
         if (result.rows.length === 0) {
@@ -5232,6 +5204,7 @@ router.put('/admin/activities/:id', authenticateAdmin, async (req, res) => {
         res.status(500).json({ error: 'Failed to update activity' });
     }
 });
+
 
 // Toggle activity status
 router.patch('/admin/activities/:id/toggle', authenticateAdmin, async (req, res) => {
