@@ -1825,7 +1825,7 @@ const cleanupDatabaseReferences = async (pool, folder, filename) => {
 // List all files from all folders
 router.get('/admin/file-manager/list', authenticateAdmin, async (req, res) => {
     try {
-        const uploadsDir = path.join(__dirname, 'public', 'uploads');
+        const uploadsDir = path.join(__dirname, 'uploads');
         const folders = ['banners', 'offers', 'submissions', 'activities'];
 
         const filesByFolder = {};
@@ -1881,7 +1881,7 @@ router.delete('/admin/file-manager/delete/:folder/:filename', authenticateAdmin,
         const pool = req.app.get('db');
         const { folder, filename } = req.params;
 
-        const filePath = path.join(__dirname, 'public', 'uploads', folder, filename);
+        const filePath = path.join(__dirname, 'uploads', folder, filename);
 
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
@@ -1916,7 +1916,7 @@ router.post('/admin/file-manager/bulk-delete', authenticateAdmin, async (req, re
 
         for (const fileId of files) {
             const [folder, filename] = fileId.split('/');
-            const filePath = path.join(__dirname, 'public', 'uploads', folder, filename);
+            const filePath = path.join(__dirname, 'uploads', folder, filename);
 
             try {
                 if (fs.existsSync(filePath)) {
@@ -1950,7 +1950,7 @@ router.post('/admin/file-manager/clear-folder', authenticateAdmin, async (req, r
         const pool = req.app.get('db');
         const { folder } = req.body;
 
-        const folderPath = path.join(__dirname, 'public', 'uploads', folder);
+        const folderPath = path.join(__dirname, 'uploads', folder);
 
         if (!fs.existsSync(folderPath)) {
             return res.status(404).json({ error: 'Folder not found' });
@@ -1985,14 +1985,14 @@ router.post('/admin/file-manager/clear-folder', authenticateAdmin, async (req, r
 router.post('/admin/file-manager/cleanup-orphaned', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const uploadsDir = path.join(__dirname, 'public', 'uploads');
+        const uploadsDir = path.join(__dirname, 'uploads');
 
         let cleaned = 0;
 
         // Check banners
         const banners = await pool.query(`SELECT id, image_url FROM banners WHERE image_url IS NOT NULL`);
         for (const banner of banners.rows) {
-            const filePath = path.join(__dirname, 'public', banner.image_url);
+            const folderPath = path.join(__dirname, 'uploads', folder);
             if (!fs.existsSync(filePath)) {
                 await pool.query(`UPDATE banners SET image_url = NULL WHERE id = $1`, [banner.id]);
                 cleaned++;
