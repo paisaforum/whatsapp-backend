@@ -2184,7 +2184,7 @@ router.get('/admin/admins', authenticateAdmin, checkPermission('manage_admins'),
 });
 
 // Get admin permissions (SUPER ADMIN ONLY)
-router.get('/admin/admins/:id/permissions', authenticateAdmin, checkPermission('manage_admins'), async (req, res) => {
+router.get('/admin/admins/:id/permissions', authenticateAdmin, async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
