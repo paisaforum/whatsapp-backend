@@ -2560,10 +2560,11 @@ router.get('/admin/activity-logs', authenticateAdmin, checkPermission('user_acti
         // If adminId is provided, fetch ADMIN activity logs (for ManageAdmins page)
         if (adminId) {
             const adminLogs = await pool.query(
-                `SELECT * FROM admin_activity_logs 
-                 WHERE admin_id = $1 
-                 ORDER BY created_at DESC 
-                 LIMIT 100`,
+                `SELECT action, details, ip_address, created_at 
+     FROM admin_activity_logs 
+     WHERE admin_id = $1 
+     ORDER BY created_at DESC 
+     LIMIT 100`,
                 [adminId]
             );
             return res.json({ logs: adminLogs.rows });
