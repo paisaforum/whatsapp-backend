@@ -4021,7 +4021,8 @@ router.get('/admin/dashboard-charts', authenticateAdmin, checkPermission('view_d
     }
 });
 // Recent Activities
-router.get('/admin/recent-activities', authenticateAdmin, checkPermission('view_dashboard'), async (req, res) => {    try {
+router.get('/admin/recent-activities', authenticateAdmin, checkPermission('view_dashboard'), async (req, res) => {
+    try {
         const pool = req.app.get('db');
         const { limit = 10 } = req.query;
 
@@ -5457,7 +5458,14 @@ router.post('/admin/upload-activity-banner', authenticateAdmin, checkPermission(
 // ==================== ADMIN SETTINGS ROUTES ====================
 
 // Get all feature settings - USE OLD KEYS
-router.get('/admin/feature-settings', authenticateAdmin, checkSettingsPermission, async (req, res) => {
+router.get('/admin/feature-settings', authenticateAdmin, async (req, res) => {
+    // Check permission but return empty instead of 403
+    const hasPermission = ['settings_referral', 'settings_spin', 'settings_streak', 'settings_milestone']
+        .some(p => req.admin.permissions?.includes(p) || req.admin.role === 'super_admin');
+
+    if (!hasPermission) {
+        return res.json({}); // Return empty instead of 403
+    }
     try {
         const pool = req.app.get('db');
 
