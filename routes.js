@@ -3143,7 +3143,11 @@ router.post('/admin/bulk-delete-submissions', authenticateAdmin, checkPermission
 });
 
 // Get all offers (admin)
-router.get('/admin/offers', authenticateAdmin, checkPermission('manage_offers'), async (req, res) => {
+router.get('/admin/offers', authenticateAdmin, async (req, res) => {
+    // Check permission but return empty instead of 403
+    if (!req.admin.permissions?.includes('manage_offers') && req.admin.role !== 'super_admin') {
+        return res.json({ offers: [] }); // Return empty array instead of 403
+    }
     try {
         const pool = req.app.get('db');
 
