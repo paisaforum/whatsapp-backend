@@ -7134,6 +7134,42 @@ router.get('/admin/campaign-settings', authenticateAdmin, checkPermission('task_
     }
 })
 
+
+// Get active campaign info for users (public endpoint)
+router.get('/api/campaign-info', authenticateUser, async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+
+        // Get active campaign
+        const campaignRes = await pool.query(
+            `SELECT id, name, description, points_per_lead, status, created_at 
+             FROM campaigns 
+             WHERE status = 'active' 
+             ORDER BY created_at DESC 
+             LIMIT 1`
+        );
+
+        if (campaignRes.rows.length === 0) {
+            return res.json({
+                campaign: null,
+                settings: { points_per_lead: 1 }
+            });
+        }
+
+        const campaign = campaignRes.rows[0];
+
+        res.json({
+            campaign: campaign,
+            settings: {
+                points_per_lead: campaign.points_per_lead || 1
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching campaign info:', error);
+        res.status(500).json({ error: 'Failed to fetch campaign info' });
+    }
+});
+
 // Get campaign statistics
 router.get('/admin/campaigns/:id/stats', authenticateAdmin, checkPermission('task_global_configuration'), async (req, res) => {
     try {
