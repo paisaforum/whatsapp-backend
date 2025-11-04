@@ -9210,22 +9210,22 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
 });
 
 
-
-
-// ==================== NOTICES ROUTES ====================
+// ==================== NOTICES ROUTES - ADD TO routes.js ====================
+// Replace the existing notices routes section with this updated version
+// Uses new 'manage_notices' permission
 
 // Get all active notices for users (public - no auth required)
 router.get('/api/notices/active', async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         const query = `
             SELECT id, title, content, type, is_important, created_at
             FROM notices 
             WHERE is_active = true 
             ORDER BY is_important DESC, created_at DESC
         `;
-        
+
         const result = await pool.query(query);
         res.json(result.rows);
     } catch (error) {
@@ -9238,13 +9238,13 @@ router.get('/api/notices/active', async (req, res) => {
 router.get('/api/notices', async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         const query = `
             SELECT id, title, content, type, is_important, is_active, created_at
             FROM notices 
             ORDER BY is_important DESC, created_at DESC
         `;
-        
+
         const result = await pool.query(query);
         res.json(result.rows);
     } catch (error) {
@@ -9253,18 +9253,19 @@ router.get('/api/notices', async (req, res) => {
     }
 });
 
-// Admin: Get all notices
-router.get('/api/admin/notices', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+// Admin: Get all notices - NEW PERMISSION: manage_notices
+router.get('/admin/notices', authenticateAdmin, checkPermission('manage_notices'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        
+
         const query = `
             SELECT id, title, content, type, is_important, is_active, created_at, updated_at
             FROM notices 
             ORDER BY created_at DESC
         `;
-        
+
         const result = await pool.query(query);
+        console.log(`✅ Admin ${req.admin.id} fetched ${result.rows.length} notices`);
         res.json(result.rows);
     } catch (error) {
         console.error('Error fetching notices:', error);
@@ -9272,31 +9273,34 @@ router.get('/api/admin/notices', authenticateAdmin, checkPermission('send_messag
     }
 });
 
-// Admin: Create new notice
-router.post('/api/admin/notices', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+// Admin: Create new notice - NEW PERMISSION: manage_notices
+router.post('/admin/notices', authenticateAdmin, checkPermission('manage_notices'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { title, content, type, is_important, is_active } = req.body;
-        
-        if (!title || !content) {
-            return res.status(400).json({ error: 'Title and content are required' });
+
+        if (!content) {
+            return res.status(400).json({ error: 'Content is required' });
         }
-        
+
+        // Auto-generate title from content if not provided
+        const noticeTitle = title || content.substring(0, 100);
+
         const query = `
             INSERT INTO notices (title, content, type, is_important, is_active)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING *
         `;
-        
+
         const result = await pool.query(query, [
-            title, 
-            content, 
-            type || 'announcement', 
-            is_important || false, 
+            noticeTitle,
+            content,
+            type || 'announcement',
+            is_important || false,
             is_active !== false
         ]);
-        
-        console.log(`✅ Notice created: "${title}" by admin ${req.admin.id}`);
+
+        console.log(`✅ Notice created: "${noticeTitle}" by admin ${req.admin.id}`);
         res.status(201).json(result.rows[0]);
     } catch (error) {
         console.error('Error creating notice:', error);
@@ -9304,26 +9308,29 @@ router.post('/api/admin/notices', authenticateAdmin, checkPermission('send_messa
     }
 });
 
-// Admin: Update notice
-router.put('/api/admin/notices/:id', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+// Admin: Update notice - NEW PERMISSION: manage_notices
+router.put('/admin/notices/:id', authenticateAdmin, checkPermission('manage_notices'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
         const { title, content, type, is_important, is_active } = req.body;
-        
+
+        // Auto-generate title from content if not provided
+        const noticeTitle = title || content.substring(0, 100);
+
         const query = `
             UPDATE notices 
             SET title = $1, content = $2, type = $3, is_important = $4, is_active = $5, updated_at = NOW()
             WHERE id = $6
             RETURNING *
         `;
-        
-        const result = await pool.query(query, [title, content, type, is_important, is_active, id]);
-        
+
+        const result = await pool.query(query, [noticeTitle, content, type, is_important, is_active, id]);
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Notice not found' });
         }
-        
+
         console.log(`✅ Notice updated: ID ${id} by admin ${req.admin.id}`);
         res.json(result.rows[0]);
     } catch (error) {
@@ -9332,20 +9339,20 @@ router.put('/api/admin/notices/:id', authenticateAdmin, checkPermission('send_me
     }
 });
 
-// Admin: Delete notice
-router.delete('/api/admin/notices/:id', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+// Admin: Delete notice - NEW PERMISSION: manage_notices
+router.delete('/admin/notices/:id', authenticateAdmin, checkPermission('manage_notices'), async (req, res) => {
     try {
         const pool = req.app.get('db');
         const { id } = req.params;
-        
+
         const query = 'DELETE FROM notices WHERE id = $1 RETURNING id, title';
-        
+
         const result = await pool.query(query, [id]);
-        
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Notice not found' });
         }
-        
+
         console.log(`✅ Notice deleted: "${result.rows[0].title}" by admin ${req.admin.id}`);
         res.json({ message: 'Notice deleted successfully' });
     } catch (error) {
