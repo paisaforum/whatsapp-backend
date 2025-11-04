@@ -9209,4 +9209,150 @@ router.get('/admin/user-referrals/:userId', authenticateAdmin, checkPermission('
     }
 });
 
+
+
+
+// ==================== NOTICES ROUTES ====================
+
+// Get all active notices for users (public - no auth required)
+router.get('/api/notices/active', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        const query = `
+            SELECT id, title, content, type, is_important, created_at
+            FROM notices 
+            WHERE is_active = true 
+            ORDER BY is_important DESC, created_at DESC
+        `;
+        
+        const result = await pool.query(query);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching active notices:', error);
+        res.status(500).json({ error: 'Failed to fetch notices' });
+    }
+});
+
+// Get all notices for users (includes inactive ones)
+router.get('/api/notices', async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        const query = `
+            SELECT id, title, content, type, is_important, is_active, created_at
+            FROM notices 
+            ORDER BY is_important DESC, created_at DESC
+        `;
+        
+        const result = await pool.query(query);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching notices:', error);
+        res.status(500).json({ error: 'Failed to fetch notices' });
+    }
+});
+
+// Admin: Get all notices
+router.get('/api/admin/notices', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        
+        const query = `
+            SELECT id, title, content, type, is_important, is_active, created_at, updated_at
+            FROM notices 
+            ORDER BY created_at DESC
+        `;
+        
+        const result = await pool.query(query);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching notices:', error);
+        res.status(500).json({ error: 'Failed to fetch notices' });
+    }
+});
+
+// Admin: Create new notice
+router.post('/api/admin/notices', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { title, content, type, is_important, is_active } = req.body;
+        
+        if (!title || !content) {
+            return res.status(400).json({ error: 'Title and content are required' });
+        }
+        
+        const query = `
+            INSERT INTO notices (title, content, type, is_important, is_active)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+        `;
+        
+        const result = await pool.query(query, [
+            title, 
+            content, 
+            type || 'announcement', 
+            is_important || false, 
+            is_active !== false
+        ]);
+        
+        console.log(`✅ Notice created: "${title}" by admin ${req.admin.id}`);
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error('Error creating notice:', error);
+        res.status(500).json({ error: 'Failed to create notice' });
+    }
+});
+
+// Admin: Update notice
+router.put('/api/admin/notices/:id', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        const { title, content, type, is_important, is_active } = req.body;
+        
+        const query = `
+            UPDATE notices 
+            SET title = $1, content = $2, type = $3, is_important = $4, is_active = $5, updated_at = NOW()
+            WHERE id = $6
+            RETURNING *
+        `;
+        
+        const result = await pool.query(query, [title, content, type, is_important, is_active, id]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Notice not found' });
+        }
+        
+        console.log(`✅ Notice updated: ID ${id} by admin ${req.admin.id}`);
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Error updating notice:', error);
+        res.status(500).json({ error: 'Failed to update notice' });
+    }
+});
+
+// Admin: Delete notice
+router.delete('/api/admin/notices/:id', authenticateAdmin, checkPermission('send_messages'), async (req, res) => {
+    try {
+        const pool = req.app.get('db');
+        const { id } = req.params;
+        
+        const query = 'DELETE FROM notices WHERE id = $1 RETURNING id, title';
+        
+        const result = await pool.query(query, [id]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Notice not found' });
+        }
+        
+        console.log(`✅ Notice deleted: "${result.rows[0].title}" by admin ${req.admin.id}`);
+        res.json({ message: 'Notice deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting notice:', error);
+        res.status(500).json({ error: 'Failed to delete notice' });
+    }
+});
+
+
 module.exports = router;
