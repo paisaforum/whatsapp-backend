@@ -7140,6 +7140,23 @@ router.get('/api/campaign-info', authenticateUser, async (req, res) => {
     try {
         const pool = req.app.get('db');
 
+        // Check if campaigns table exists
+        const tableCheck = await pool.query(`
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'campaigns'
+            );
+        `);
+
+        if (!tableCheck.rows[0].exists) {
+            console.error('Campaigns table does not exist');
+            return res.json({
+                campaign: null,
+                settings: { points_per_lead: 1 }
+            });
+        }
+
         // Get active campaign
         const campaignRes = await pool.query(
             `SELECT id, name, description, points_per_lead, status, created_at 
@@ -7150,6 +7167,7 @@ router.get('/api/campaign-info', authenticateUser, async (req, res) => {
         );
 
         if (campaignRes.rows.length === 0) {
+            console.log('No active campaign found');
             return res.json({
                 campaign: null,
                 settings: { points_per_lead: 1 }
@@ -7158,6 +7176,8 @@ router.get('/api/campaign-info', authenticateUser, async (req, res) => {
 
         const campaign = campaignRes.rows[0];
 
+        console.log('Campaign info fetched:', campaign.id);
+
         res.json({
             campaign: campaign,
             settings: {
@@ -7165,10 +7185,16 @@ router.get('/api/campaign-info', authenticateUser, async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Error fetching campaign info:', error);
-        res.status(500).json({ error: 'Failed to fetch campaign info' });
+        console.error('Error fetching campaign info:', error.message);
+        console.error('Error stack:', error.stack);
+        // Return default instead of 500
+        res.json({
+            campaign: null,
+            settings: { points_per_lead: 1 }
+        });
     }
 });
+
 
 // Get campaign statistics
 router.get('/admin/campaigns/:id/stats', authenticateAdmin, checkPermission('task_global_configuration'), async (req, res) => {
