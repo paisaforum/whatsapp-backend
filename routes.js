@@ -312,14 +312,34 @@ const checkPermission = (requiredPermission) => {
 // ADD THIS HELPER RIGHT AFTER checkPermission:
 const checkSettingsPermission = (req, res, next) => {
     try {
-        const settingType = req.body.type || req.query.type || req.params.key;
-
-        if (!settingType) {
-            return res.status(400).json({
-                error: 'Missing setting type'
-            });
+        // For super admin, bypass all checks
+        if (req.admin.role === 'super_admin') {
+            return next();
         }
 
+        const settingType = req.body.type || req.query.type || req.params.key;
+
+        // If no specific type (bulk update), check if admin has ANY settings permission
+        if (!settingType) {
+            const settingsPermissions = [
+                'settings_referral',
+                'settings_spin',
+                'settings_streak',
+                'settings_milestone'
+            ];
+
+            const hasAnyPermission = settingsPermissions.some(p =>
+                req.admin.permissions?.includes(p)
+            );
+
+            if (!hasAnyPermission) {
+                return res.status(403).json({ error: 'Access denied to settings' });
+            }
+
+            return next();
+        }
+
+        // If specific type provided, check that permission
         const settingsMap = {
             'referral': 'settings_referral',
             'spin': 'settings_spin',
@@ -332,9 +352,7 @@ const checkSettingsPermission = (req, res, next) => {
         const permission = settingsMap[settingType.toLowerCase()];
 
         if (!permission) {
-            return res.status(400).json({
-                error: 'Invalid setting type'
-            });
+            return res.status(400).json({ error: 'Invalid setting type' });
         }
 
         return checkPermission(permission)(req, res, next);
@@ -344,7 +362,6 @@ const checkSettingsPermission = (req, res, next) => {
         return res.status(500).json({ error: 'Permission check failed' });
     }
 };
-
 
 // Activity logging helper
 const logAdminActivity = async (pool, adminId, action, details) => {
