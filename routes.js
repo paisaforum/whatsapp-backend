@@ -7159,7 +7159,7 @@ router.get('/api/campaign-info', authenticateUser, async (req, res) => {
 
         // Get active campaign
         const campaignRes = await pool.query(
-            `SELECT id, name, description, points_per_lead, status, created_at 
+            `SELECT id, title, description, points_per_lead, status, created_at 
              FROM campaigns 
              WHERE status = 'active' 
              ORDER BY created_at DESC 
