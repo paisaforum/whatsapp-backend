@@ -4810,14 +4810,20 @@ router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
         const pool = req.app.get('db');
         const { userId } = req.params;
         const today = new Date().toISOString().split('T')[0];
+        // Get free spins setting for first-time spin check
+        const firstTimeSpinSettings = await pool.query(
+            'SELECT setting_value FROM settings WHERE setting_key = $1',
+            ['spin_free_per_day']
+        );
+        const firstTimeFreeSpins = parseInt(firstTimeSpinSettings.rows[0]?.setting_value) || 1;
 
         let spins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
 
         if (spins.rows.length === 0) {
             // Create initial spin record
             spins = await pool.query(
-                'INSERT INTO user_spins (user_id, free_spins_today, last_spin_date) VALUES ($1, 1, $2) RETURNING *',
-                [userId, today]
+                'INSERT INTO user_spins (user_id, free_spins_today, last_spin_date) VALUES ($1, $2, $3) RETURNING *',
+                [userId, firstTimeFreeSpins, today]
             );
         } else {
             // Reset free spins if new day - FIX: Convert database date to string for comparison
