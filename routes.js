@@ -244,12 +244,20 @@ const awardBonusSpin = async (pool, userId) => {
         const sharesNeeded = parseInt(spinSettings.rows[0]?.setting_value) || 10;
         console.log('Shares needed per spin:', sharesNeeded);
 
-        // Count OLD system shares (global tasks)
+        // Count OLD system shares (global tasks - OLD)
         const oldSpinShares = await pool.query(
             `SELECT COUNT(DISTINCT recipient_number) as total
              FROM user_recipients ur
              JOIN submissions s ON ur.submission_id = s.id
              WHERE s.user_id = $1 AND s.status = 'active'`,
+            [userId]
+        );
+
+        // Count NEW global tasks
+        const newGlobalTasks = await pool.query(
+            `SELECT COUNT(*) as total
+             FROM user_lead_assignments
+             WHERE user_id = $1 AND status = 'approved'`,
             [userId]
         );
 
@@ -260,21 +268,23 @@ const awardBonusSpin = async (pool, userId) => {
             [userId]
         );
 
-        let newSpinCount = 0;
+        let newPersonalCount = 0;
         for (const row of newSpinShares.rows) {
             try {
                 const data = JSON.parse(row.recipient_numbers || '{}');
-                newSpinCount += data.recipients?.length || 0;
+                newPersonalCount += data.recipients?.length || 0;
             } catch (e) {
                 console.log('Error parsing recipient_numbers:', e);
             }
         }
 
-        const oldSpinCount = parseInt(oldSpinShares.rows[0].total) || 0;
-        const shareCount = oldSpinCount + newSpinCount;
+        const oldGlobalCount = parseInt(oldSpinShares.rows[0].total) || 0;
+        const newGlobalCount = parseInt(newGlobalTasks.rows[0].total) || 0;
+        const shareCount = oldGlobalCount + newGlobalCount + newPersonalCount;
 
-        console.log('Old system shares (global):', oldSpinCount);
-        console.log('New system shares (personal):', newSpinCount);
+        console.log('Old global tasks:', oldGlobalCount);
+        console.log('New global tasks:', newGlobalCount);
+        console.log('New personal shares:', newPersonalCount);
         console.log('Total shareCount:', shareCount);
         console.log('Modulo check:', shareCount % sharesNeeded);
         console.log(`🎰 Spin Check - User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} per spin`);
@@ -315,7 +325,6 @@ const awardBonusSpin = async (pool, userId) => {
         return false;
     }
 };
-
 
 
 const jwt = require('jsonwebtoken');
@@ -8635,7 +8644,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                              WHERE user_id = $4`,
                             [newStreak, today, streakBonus, sub.user_id]
                         );
-                        
+
                         if (streakBonus > 0) {
                             await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, sub.user_id]);
 
