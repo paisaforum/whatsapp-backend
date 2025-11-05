@@ -229,6 +229,93 @@ const logAdminApprovalActivity = async (pool, userId, points, submissionId, admi
     );
 };
 
+// ============================================
+// BONUS SPIN AWARD HELPER FUNCTION
+// ============================================
+const awardBonusSpin = async (pool, userId) => {
+    try {
+        console.log('===== BONUS SPIN AWARD STARTED =====');
+        console.log('User ID:', userId);
+
+        const spinSettings = await pool.query(
+            'SELECT setting_value FROM settings WHERE setting_key = $1',
+            ['spin_per_shares']
+        );
+        const sharesNeeded = parseInt(spinSettings.rows[0]?.setting_value) || 10;
+        console.log('Shares needed per spin:', sharesNeeded);
+
+        // Count OLD system shares (global tasks)
+        const oldSpinShares = await pool.query(
+            `SELECT COUNT(DISTINCT recipient_number) as total
+             FROM user_recipients ur
+             JOIN submissions s ON ur.submission_id = s.id
+             WHERE s.user_id = $1 AND s.status = 'active'`,
+            [userId]
+        );
+
+        // Count NEW system shares (personal shares)
+        const newSpinShares = await pool.query(
+            `SELECT recipient_numbers FROM personal_share_submissions 
+             WHERE user_id = $1 AND status = 'approved'`,
+            [userId]
+        );
+
+        let newSpinCount = 0;
+        for (const row of newSpinShares.rows) {
+            try {
+                const data = JSON.parse(row.recipient_numbers || '{}');
+                newSpinCount += data.recipients?.length || 0;
+            } catch (e) {
+                console.log('Error parsing recipient_numbers:', e);
+            }
+        }
+
+        const oldSpinCount = parseInt(oldSpinShares.rows[0].total) || 0;
+        const shareCount = oldSpinCount + newSpinCount;
+
+        console.log('Old system shares (global):', oldSpinCount);
+        console.log('New system shares (personal):', newSpinCount);
+        console.log('Total shareCount:', shareCount);
+        console.log('Modulo check:', shareCount % sharesNeeded);
+        console.log(`🎰 Spin Check - User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} per spin`);
+
+        if (shareCount > 0 && shareCount % sharesNeeded === 0) {
+            console.log('✅ CONDITION MET - AWARDING BONUS SPIN');
+
+            let userSpins = await pool.query(
+                'SELECT * FROM user_spins WHERE user_id = $1',
+                [userId]
+            );
+
+            if (userSpins.rows.length === 0) {
+                console.log('Creating new user_spins record');
+                await pool.query(
+                    'INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)',
+                    [userId]
+                );
+            } else {
+                console.log('Updating existing user_spins record');
+                await pool.query(
+                    'UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1',
+                    [userId]
+                );
+            }
+
+            console.log(`🎉 Awarded bonus spin to user ${userId}!`);
+            console.log('===== BONUS SPIN AWARD COMPLETED =====');
+            return true;
+        } else {
+            console.log('❌ Condition NOT met - no bonus spin awarded');
+            console.log('===== BONUS SPIN AWARD ENDED =====');
+            return false;
+        }
+    } catch (error) {
+        console.error('Bonus spin award error:', error);
+        console.log('===== BONUS SPIN AWARD FAILED =====');
+        return false;
+    }
+};
+
 
 
 const jwt = require('jsonwebtoken');
@@ -1257,47 +1344,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
             // 4. AWARD BONUS SPIN (count from BOTH systems)
             try {
-                const spinSettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', ['spin_per_shares']);
-                const sharesNeeded = parseInt(spinSettings.rows[0].setting_value) || 10;
-
-                // Count total shares from both systems
-                const oldSpinShares = await pool.query(
-                    `SELECT COUNT(DISTINCT recipient_number) as total
-                     FROM user_recipients ur
-                     JOIN submissions s ON ur.submission_id = s.id
-                     WHERE s.user_id = $1 AND s.status = 'active'`,
-                    [userId]
-                );
-
-                const newSpinShares = await pool.query(
-                    `SELECT recipient_numbers FROM personal_share_submissions 
-                     WHERE user_id = $1 AND status = 'approved'`,
-                    [userId]
-                );
-
-                let newSpinCount = 0;
-                for (const row of newSpinShares.rows) {
-                    try {
-                        const data = JSON.parse(row.recipient_numbers || '{}');
-                        newSpinCount += data.recipients?.length || 0;
-                    } catch (e) { }
-                }
-
-                const shareCount = (parseInt(oldSpinShares.rows[0].total) || 0) + newSpinCount;
-
-                console.log(`🎰 Spin Check - User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} per spin`);
-
-                if (shareCount > 0 && shareCount % sharesNeeded === 0) {
-                    let userSpins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
-
-                    if (userSpins.rows.length === 0) {
-                        await pool.query('INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)', [userId]);
-                    } else {
-                        await pool.query('UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1', [userId]);
-                    }
-
-                    console.log(`🎉 Awarded bonus spin to user ${userId}!`);
-                }
+                await awardBonusSpin(pool, userId);
             } catch (error) {
                 console.error('Bonus spin award error:', error);
             }
@@ -6908,6 +6955,15 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                 console.error('Global task streak error:', streakError);
             }
 
+
+            // ✅ AWARD BONUS SPIN (after admin approval)
+            try {
+                await awardBonusSpin(pool, submission.user_id);
+            } catch (bonusError) {
+                console.error('Global task bonus spin error:', bonusError);
+            }
+
+
             // If points not awarded yet, award now
             if (assignment.points_awarded === 0) {
                 const pointsRes = await pool.query(
@@ -8606,6 +8662,13 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                 }
             } catch (streakError) {
                 console.error('Personal share admin approval streak error:', streakError);
+            }
+
+            // ✅ AWARD BONUS SPIN (after admin approval)
+            try {
+                await awardBonusSpin(pool, sub.user_id);
+            } catch (bonusError) {
+                console.error('Personal share bonus spin error:', bonusError);
             }
 
 
