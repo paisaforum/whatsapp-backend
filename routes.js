@@ -6928,23 +6928,23 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, submission.user_id]);
 
                             // Log point transaction
                             await pool.query(
                                 'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
-                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                                [submission.user_id, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
                             );
 
                             // Log activity
                             const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
                             const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
                             const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
-                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+                            await logStreakActivity(pool, submission.user_id, newStreak, streakBonus, nextDayBonus);
 
                             await pool.query(
                                 'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                                [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                                [submission.user_id, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
                             );
                         }
 
@@ -8635,25 +8635,25 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                              WHERE user_id = $4`,
                             [newStreak, today, streakBonus, sub.user_id]
                         );
-
+                        
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, sub.user_id]);
 
                             // Log point transaction
                             await pool.query(
                                 'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
-                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                                [sub.user_id, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
                             );
 
                             // Log activity
                             const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
                             const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
                             const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
-                            await logStreakActivity(pool, userId, newStreak, streakBonus, nextDayBonus);
+                            await logStreakActivity(pool, sub.user_id, newStreak, streakBonus, nextDayBonus);
 
                             await pool.query(
                                 'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
-                                [userId, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
+                                [sub.user_id, `🔥 Day ${newStreak} streak! You earned ${streakBonus} bonus points!`, 'streak_bonus']
                             );
                         }
 
