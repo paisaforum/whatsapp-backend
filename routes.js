@@ -7041,6 +7041,12 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                                 );
                                 await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, submission.user_id]);
                                 await logPointTransaction(pool, submission.user_id, bonus, 'milestone', `Milestone reward: ${shares} shares completed`, shares);
+
+                                // ✅ ADD THIS LINE:
+                                const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
+                                const nextMilestone = allMilestones.find(m => m > shares) || null;
+                                await logMilestoneActivity(pool, submission.user_id, shares, bonus, shareCount, nextMilestone);
+
                                 console.log(`🎉 Milestone awarded: ${shares} shares - ${bonus} points to user ${submission.user_id}`);
                             }
                         }
