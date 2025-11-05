@@ -550,10 +550,16 @@ router.post('/register', async (req, res) => {
             }
         }
 
-        // Initialize user data in related tables
+        // ✅ FIXED:
+        const spinSettings = await pool.query(
+            'SELECT setting_value FROM settings WHERE setting_key = $1',
+            ['spin_free_per_day']
+        );
+        const freeSpinsPerDay = parseInt(spinSettings.rows[0]?.setting_value) || 1;
+
         await pool.query(
-            'INSERT INTO user_spins (user_id, free_spins_today) VALUES ($1, 1)',
-            [userId]
+            'INSERT INTO user_spins (user_id, free_spins_today) VALUES ($1, $2)',
+            [userId, freeSpinsPerDay]
         );
 
         await pool.query(
@@ -4821,9 +4827,16 @@ router.get('/user-spins/:userId', authenticateUser, async (req, res) => {
 
             if (lastSpinDate !== today) {
                 console.log('📅 New day detected, resetting spins'); // Debug log
+                // ✅ FIXED:
+                const spinSettings = await pool.query(
+                    'SELECT setting_value FROM settings WHERE setting_key = $1',
+                    ['spin_free_per_day']
+                );
+                const freeSpinsPerDay = parseInt(spinSettings.rows[0]?.setting_value) || 1;
+
                 await pool.query(
-                    'UPDATE user_spins SET free_spins_today = 1, last_spin_date = $1 WHERE user_id = $2',
-                    [today, userId]
+                    'UPDATE user_spins SET free_spins_today = $1, last_spin_date = $2 WHERE user_id = $3',
+                    [freeSpinsPerDay, today, userId]
                 );
                 spins = await pool.query('SELECT * FROM user_spins WHERE user_id = $1', [userId]);
             }
@@ -5627,75 +5640,6 @@ router.get('/spin-settings', authenticateUser, async (req, res) => {
     }
 });
 
-
-// Get spin settings for users (public-ish, requires auth)
-router.get('/spin-settings', authenticateUser, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-
-        const settings = await pool.query(
-            `SELECT setting_key, setting_value FROM settings 
-             WHERE setting_key IN ('daily_free_spins', 'shares_per_bonus_spin', 'spin_prizes')`
-        );
-
-        const settingsObj = {
-            daily_free_spins: 1,
-            shares_per_bonus_spin: 10,
-            prizes: [10, 20, 30, 50, 100, 200, 500]
-        };
-
-        settings.rows.forEach(row => {
-            if (row.setting_key === 'daily_free_spins') {
-                settingsObj.daily_free_spins = parseInt(row.setting_value);
-            } else if (row.setting_key === 'shares_per_bonus_spin') {
-                settingsObj.shares_per_bonus_spin = parseInt(row.setting_value);
-            } else if (row.setting_key === 'spin_prizes') {
-                settingsObj.prizes = JSON.parse(row.setting_value);
-            }
-        });
-
-        res.json(settingsObj);
-    } catch (error) {
-        console.error('Error fetching spin settings:', error);
-        res.status(500).json({ error: 'Failed to fetch spin settings' });
-    }
-});
-
-
-// Bulk update feature settings (NEW ROUTE)
-// Bulk update feature settings (FIXED WITH UPSERT)
-router.put('/admin/feature-settings', authenticateAdmin, checkSettingsPermission, async (req, res) => {
-    try {
-        const pool = req.app.get('db');
-        const updates = req.body;
-
-        // Update each setting using UPSERT (INSERT ... ON CONFLICT)
-        for (const [key, value] of Object.entries(updates)) {
-            await pool.query(
-                `INSERT INTO settings (setting_key, setting_value, updated_at) 
-                 VALUES ($1, $2, NOW())
-                 ON CONFLICT (setting_key) 
-                 DO UPDATE SET setting_value = $2, updated_at = NOW()`,
-                [key, value.toString()]
-            );
-        }
-
-        await logAdminActivity(
-            pool,
-            req.admin.adminId,
-            'update_settings',
-            `Updated feature settings: ${Object.keys(updates).join(', ')}`
-        );
-
-        res.json({
-            message: 'Settings updated successfully',
-            updatedKeys: Object.keys(updates)
-        });
-    } catch (error) {
-        console.error('Error updating settings:', error);
-        res.status(500).json({ error: 'Failed to update settings' });
-    }
-});
 
 
 
