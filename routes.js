@@ -286,36 +286,48 @@ const awardBonusSpin = async (pool, userId) => {
         console.log('New global tasks:', newGlobalCount);
         console.log('New personal shares:', newPersonalCount);
         console.log('Total shareCount:', shareCount);
-        console.log('Modulo check:', shareCount % sharesNeeded);
-        console.log(`🎰 Spin Check - User ${userId}: ${shareCount} total shares, needs ${sharesNeeded} per spin`);
 
-        if (shareCount > 0 && shareCount % sharesNeeded === 0) {
-            console.log('✅ CONDITION MET - AWARDING BONUS SPIN');
+        // ✅ NEW LOGIC: Calculate total spins earned vs current spins
+        const spinsEarned = Math.floor(shareCount / sharesNeeded);
+        console.log(`Total spins earned: ${spinsEarned} (${shareCount} shares / ${sharesNeeded} per spin)`);
 
+        if (spinsEarned > 0) {
             let userSpins = await pool.query(
-                'SELECT * FROM user_spins WHERE user_id = $1',
+                'SELECT bonus_spins FROM user_spins WHERE user_id = $1',
                 [userId]
             );
 
-            if (userSpins.rows.length === 0) {
-                console.log('Creating new user_spins record');
-                await pool.query(
-                    'INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, 1)',
-                    [userId]
-                );
-            } else {
-                console.log('Updating existing user_spins record');
-                await pool.query(
-                    'UPDATE user_spins SET bonus_spins = bonus_spins + 1 WHERE user_id = $1',
-                    [userId]
-                );
-            }
+            const currentSpins = userSpins.rows.length > 0 ? (userSpins.rows[0].bonus_spins || 0) : 0;
+            const spinsToAward = spinsEarned - currentSpins;
 
-            console.log(`🎉 Awarded bonus spin to user ${userId}!`);
-            console.log('===== BONUS SPIN AWARD COMPLETED =====');
-            return true;
+            console.log(`Current bonus spins: ${currentSpins}`);
+            console.log(`Spins to award: ${spinsToAward}`);
+
+            if (spinsToAward > 0) {
+                if (userSpins.rows.length === 0) {
+                    console.log(`Creating new user_spins record with ${spinsEarned} spins`);
+                    await pool.query(
+                        'INSERT INTO user_spins (user_id, bonus_spins) VALUES ($1, $2)',
+                        [userId, spinsEarned]
+                    );
+                } else {
+                    console.log(`Adding ${spinsToAward} spins (from ${currentSpins} to ${spinsEarned})`);
+                    await pool.query(
+                        'UPDATE user_spins SET bonus_spins = $1 WHERE user_id = $2',
+                        [spinsEarned, userId]
+                    );
+                }
+
+                console.log(`🎉 Awarded ${spinsToAward} bonus spin(s) to user ${userId}!`);
+                console.log('===== BONUS SPIN AWARD COMPLETED =====');
+                return true;
+            } else {
+                console.log('✅ User already has correct number of spins');
+                console.log('===== BONUS SPIN AWARD ENDED =====');
+                return false;
+            }
         } else {
-            console.log('❌ Condition NOT met - no bonus spin awarded');
+            console.log('❌ Not enough shares for a bonus spin yet');
             console.log('===== BONUS SPIN AWARD ENDED =====');
             return false;
         }
@@ -325,7 +337,6 @@ const awardBonusSpin = async (pool, userId) => {
         return false;
     }
 };
-
 
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -1319,7 +1330,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                                 [userId, 'shares', milestoneShares, bonus]
                             );
 
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, userId]);
+                            await pool.query('UPDATE users SET points = points + $1, milestone_earnings = milestone_earnings + $1 WHERE id = $2', [bonus, userId]);
 
                             const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                             const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
