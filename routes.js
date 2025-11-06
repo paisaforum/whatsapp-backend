@@ -2877,9 +2877,12 @@ router.post('/admin/review-redemption', authenticateAdmin, checkPermission('mana
                         if (commission > 0) {
                             // Award commission points to referrer
                             await pool.query(
-                                'UPDATE users SET points = points + $1 WHERE id = $2',
+                                'UPDATE users SET points = points + $1, referral_earnings = referral_earnings + $1 WHERE id = $2',
                                 [commission, referrerId]
                             );
+
+                            // ✅ ADD THIS: Log to point_transactions
+                            await logPointTransaction(pool, referrerId, commission, 'referral', `Redemption commission from user ${userId}`, redemptionId);
 
                             // Update referral commission tracking
                             await pool.query(
