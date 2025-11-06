@@ -1158,7 +1158,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
         // Award initial points if applicable
         if (pointsToAward > 0) {
-            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsToAward, userId]);
+            await pool.query('UPDATE users SET points = points + $1, task_earnings = task_earnings + $1 WHERE id = $2', [pointsToAward, userId]);
 
             await pool.query(`
                 INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at)
@@ -1234,6 +1234,12 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
 
                         if (streakBonus > 0) {
                             await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, userId]);
+                            // ✅ ADD THESE 4 LINES:
+                            await pool.query(
+                                'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                                [userId, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
+                            );
+
 
                             const nextDayKey = `streak_day${newStreak + 1}_bonus`;
                             const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
