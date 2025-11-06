@@ -630,7 +630,7 @@ router.post('/register', async (req, res) => {
 
                 // Award signup bonus to both users
                 await pool.query(
-                    'UPDATE users SET points = points + $1 WHERE id IN ($2, $3)',
+                    'UPDATE users SET points = points + $1, signup_bonus_earnings = signup_bonus_earnings + $1 WHERE id IN ($2, $3)',
                     [signupBonus, referrerId, userId]
                 );
                 // Log transactions
@@ -1226,7 +1226,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+                            await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, userId]);
 
                             const nextDayKey = `streak_day${newStreak + 1}_bonus`;
                             const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
@@ -1333,7 +1333,7 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                         const commission = Math.floor(pointsToAward * commissionPercent / 100);
 
                         if (commission > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+                            await pool.query('UPDATE users SET points = points + $1, referral_earnings = referral_earnings + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
 
                             const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
                             await logCommissionActivity(pool, referrer.rows[0].id, referredUser.rows[0].whatsapp_number, commission, commissionPercent, pointsToAward, userId);
@@ -4800,7 +4800,7 @@ router.post('/apply-referral', authenticateUser, async (req, res) => {
         await pool.query('UPDATE users SET referred_by_code = $1 WHERE id = $2', [referralCode, userId]);
 
         // Award bonus to referrer
-        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, referrerId]);
+        await pool.query('UPDATE users SET points = points + $1, referral_earnings = referral_earnings + $1 WHERE id = $2', [bonus, referrerId]);
         await logPointTransaction(pool, referrerId, bonus, 'referral', `Referral bonus from user ${userId}`, userId);
 
         await logAdminActivity(pool, null, 'referral_bonus', `User ${userId} used referral code ${referralCode}. Referrer ${referrerId} got ${bonus} points`);
@@ -4838,7 +4838,7 @@ router.post('/referral-commission', authenticateUser, async (req, res) => {
 
         if (commission > 0) {
             // Award commission
-            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
+            await pool.query('UPDATE users SET points = points + $1, referral_earnings = referral_earnings + $1 WHERE id = $2', [commission, referrer.rows[0].id]);
 
             // ✅ ADD THIS: Log commission activity
             const referredUser = await pool.query('SELECT whatsapp_number FROM users WHERE id = $1', [userId]);
@@ -5007,7 +5007,7 @@ router.post('/spin', authenticateUser, async (req, res) => {
         // ============ END WEIGHTED SELECTION ============
 
         // Award prize
-        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [prize, userId]);
+        await pool.query('UPDATE users SET points = points + $1, spin_earnings = spin_earnings + $1 WHERE id = $2', [prize, userId]);
 
         // Log transaction
         await logSpinActivity(pool, userId, prize, spinType);
@@ -6197,7 +6197,7 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, userId]);
+                            await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, userId]);
 
                             // Log point transaction
                             await pool.query(
@@ -7022,7 +7022,7 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, submission.user_id]);
+                            await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, submission.user_id]);
 
                             // Log point transaction
                             await pool.query(
@@ -8749,7 +8749,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                         );
 
                         if (streakBonus > 0) {
-                            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [streakBonus, sub.user_id]);
+                            await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, sub.user_id]);
 
                             // Log point transaction
                             await pool.query(
