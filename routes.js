@@ -1331,6 +1331,11 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
                             );
 
                             await pool.query('UPDATE users SET points = points + $1, milestone_earnings = milestone_earnings + $1 WHERE id = $2', [bonus, userId]);
+                            // ✅ ADD THESE 4 LINES:
+                            await pool.query(
+                                'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                                [userId, bonus, 'milestone', `Milestone reward: ${milestoneShares} shares completed`]
+                            );
 
                             const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                             const nextMilestone = allMilestones.find(m => m > milestoneShares) || null;
