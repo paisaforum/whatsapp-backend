@@ -8647,16 +8647,26 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
         const settings = await pool.query('SELECT * FROM personal_share_settings ORDER BY id DESC LIMIT 1');
         const pointsPerSubmission = settings.rows[0]?.points_per_submission || 5;
 
+        // ✅ FIX: Parse JSON to get recipient count
+        let recipientCount = 1;
+        try {
+            const data = JSON.parse(sub.recipient_numbers || '{}');
+            recipientCount = data.recipients?.length || 1;
+        } catch (e) {
+            console.error('Error parsing recipients:', e);
+        }
+
         const status = action === 'approve' ? 'approved' : 'rejected';
         let pointsChange = 0;
 
         if (action === 'approve' && sub.points_awarded === 0) {
-            pointsChange = pointsPerSubmission;
+            // ✅ FIX: Award points based on recipient count!
+            pointsChange = pointsPerSubmission * recipientCount;
         } else if (action === 'reject' && sub.points_awarded > 0) {
             pointsChange = -sub.points_awarded;
         }
 
-        const finalPointsAwarded = action === 'approve' ? pointsPerSubmission : 0;
+        const finalPointsAwarded = action === 'approve' ? (pointsPerSubmission * recipientCount) : 0;
 
         // Update submission
         await pool.query(`
@@ -8665,12 +8675,12 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
             WHERE id = $5
         `, [status, adminNotes, finalPointsAwarded, req.admin.adminId, submissionId]);
 
-        // Apply points change
+        // Apply points change with task_earnings tracking
         if (pointsChange !== 0) {
-            await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [pointsChange, sub.user_id]);
+            await pool.query('UPDATE users SET points = points + $1, task_earnings = task_earnings + $1 WHERE id = $2', [pointsChange, sub.user_id]);
 
             const description = pointsChange > 0
-                ? `Personal share approved - ${pointsChange} points awarded`
+                ? `Personal share approved - ${recipientCount} recipients, ${pointsChange} points awarded`
                 : `Personal share rejected - ${Math.abs(pointsChange)} points revoked`;
 
             await pool.query(`
@@ -8679,19 +8689,11 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
             `, [sub.user_id, pointsChange, action === 'approve' ? 'personal_share_approved' : 'personal_share_rejected', description]);
         }
 
-        // ✅ Log user activity
         if (action === 'approve') {
-            // Parse submission data to get recipient count
-            try {
-                const data = JSON.parse(sub.recipient_numbers || '{}');
-                const recipientCount = data.recipients?.length || 0;
-                await logPersonalShareActivity(pool, sub.user_id, recipientCount, finalPointsAwarded, 'offer');
-            } catch (e) {
-                console.error('Error parsing recipient data for activity log:', e);
-            }
+            // Log user activity
+            await logPersonalShareActivity(pool, sub.user_id, recipientCount, finalPointsAwarded, 'offer');
 
-
-            // ✅ UPDATE STREAK FOR PERSONAL SHARE ADMIN APPROVAL
+            // ✅ UPDATE STREAK
             try {
                 const today = new Date().toISOString().split('T')[0];
                 let streak = await pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [sub.user_id]);
@@ -8706,7 +8708,7 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                     const day1Bonus = parseInt(day1Settings.rows[0]?.setting_value) || 0;
 
                     if (day1Bonus > 0) {
-                        await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [day1Bonus, sub.user_id]);
+                        await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [day1Bonus, sub.user_id]);
                         await pool.query(
                             'INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, $3)',
                             [sub.user_id, `🔥 Day 1 streak! You earned ${day1Bonus} bonus points!`, 'streak_bonus']
@@ -8726,7 +8728,6 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                         const yesterdayStr = yesterday.toISOString().split('T')[0];
 
                         let newStreak = lastShareDate === yesterdayStr ? currentStreak + 1 : 1;
-
                         const cycleDay = ((newStreak - 1) % 7) + 1;
                         const settingKey = `streak_day${cycleDay}_bonus`;
 
@@ -8751,13 +8752,11 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                         if (streakBonus > 0) {
                             await pool.query('UPDATE users SET points = points + $1, streak_earnings = streak_earnings + $1 WHERE id = $2', [streakBonus, sub.user_id]);
 
-                            // Log point transaction
                             await pool.query(
                                 'INSERT INTO point_transactions (user_id, amount, transaction_type, description, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
                                 [sub.user_id, streakBonus, 'streak_bonus', `Day ${newStreak} streak bonus`]
                             );
 
-                            // Log activity
                             const nextDayKey = `streak_day${((newStreak) % 7) + 1}_bonus`;
                             const nextDaySettings = await pool.query('SELECT setting_value FROM settings WHERE setting_key = $1', [nextDayKey]);
                             const nextDayBonus = parseInt(nextDaySettings.rows[0]?.setting_value) || 0;
@@ -8776,17 +8775,99 @@ router.post('/admin/personal-share/review-submission', authenticateAdmin, checkP
                 console.error('Personal share admin approval streak error:', streakError);
             }
 
-            // ✅ AWARD BONUS SPIN (after admin approval)
+            // ✅ AWARD BONUS SPIN
             try {
                 await awardBonusSpin(pool, sub.user_id);
             } catch (bonusError) {
                 console.error('Personal share bonus spin error:', bonusError);
             }
 
+            // ✅ CHECK MILESTONES (NEW - WAS MISSING!)
+            try {
+                console.log('===== MILESTONE CHECK STARTED (PERSONAL SHARE ADMIN) =====');
+                console.log('User ID:', sub.user_id);
 
+                const personalShares = await pool.query(`
+                    SELECT COUNT(DISTINCT recipient_number) as total
+                    FROM user_recipients sr
+                    JOIN submissions s ON sr.submission_id = s.id
+                    WHERE s.user_id = $1 AND s.status = 'active'`, [sub.user_id]);
+
+                const newShares = await pool.query(`
+                    SELECT recipient_numbers FROM personal_share_submissions 
+                    WHERE user_id = $1 AND status = 'approved'`, [sub.user_id]);
+
+                let newShareCount = 0;
+                for (const row of newShares.rows) {
+                    try {
+                        const data = JSON.parse(row.recipient_numbers || '{}');
+                        newShareCount += data.recipients?.length || 0;
+                    } catch (e) { }
+                }
+
+                const globalTasks = await pool.query(`
+                    SELECT COUNT(*) as total
+                    FROM user_lead_assignments
+                    WHERE user_id = $1 AND status = 'approved'`, [sub.user_id]);
+
+                const shareCount = parseInt(personalShares.rows[0].total) + newShareCount + parseInt(globalTasks.rows[0].total);
+
+                console.log('Personal shares:', personalShares.rows[0].total);
+                console.log('New personal shares:', newShareCount);
+                console.log('Global tasks:', globalTasks.rows[0].total);
+                console.log('Total shareCount:', shareCount);
+
+                const milestones = await pool.query(`
+                    SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key`);
+
+                console.log('Milestones found:', milestones.rows.length);
+
+                for (const m of milestones.rows) {
+                    const shares = parseInt(m.setting_key.replace('milestone_', ''));
+                    const bonus = parseInt(m.setting_value);
+
+                    console.log(`Checking milestone ${shares}: shareCount=${shareCount}, bonus=${bonus}`);
+
+                    if (shareCount >= shares) {
+                        console.log('✅ Share count met!');
+
+                        const exists = await pool.query(
+                            'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
+                            [sub.user_id, 'shares', shares]
+                        );
+
+                        console.log('Already awarded?', exists.rows.length > 0);
+
+                        if (exists.rows.length === 0) {
+                            console.log('🎯 AWARDING MILESTONE NOW!');
+
+                            await pool.query(
+                                'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
+                                [sub.user_id, 'shares', shares, bonus]
+                            );
+
+                            await pool.query(
+                                'UPDATE users SET points = points + $1, milestone_earnings = milestone_earnings + $1 WHERE id = $2',
+                                [bonus, sub.user_id]
+                            );
+
+                            await logPointTransaction(pool, sub.user_id, bonus, 'milestone', `Milestone reward: ${shares} shares completed`, shares);
+
+                            const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
+                            const nextMilestone = allMilestones.find(m => m > shares) || null;
+                            await logMilestoneActivity(pool, sub.user_id, shares, bonus, shareCount, nextMilestone);
+
+                            console.log(`🎉 Milestone awarded: ${shares} shares - ${bonus} points to user ${sub.user_id}`);
+                        }
+                    }
+                }
+
+                console.log('===== MILESTONE CHECK COMPLETED =====');
+            } catch (error) {
+                console.error('Error checking milestones (personal share admin):', error);
+            }
 
         } else if (action === 'reject') {
-            // Log rejection in activity
             const shortReason = adminNotes.length > 30 ? adminNotes.substring(0, 30) + '...' : adminNotes;
             await logActivity(
                 pool,
