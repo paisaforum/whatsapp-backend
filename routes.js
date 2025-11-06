@@ -1055,7 +1055,7 @@ router.get('/dashboard/:userId', authenticateUser, async (req, res) => {
 
 
 // Submit proof endpoint (NEW SYSTEM with settings + duplicate check across old/new)
-router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 10), async (req, res) => {
+router.post('/submit-proof', authenticateUser, uploadSubmission.array('screenshots', 50), async (req, res) => {
     const { userId, recipientNumbers } = req.body;
     const screenshots = req.files;
 
@@ -1075,6 +1075,13 @@ router.post('/submit-proof', authenticateUser, uploadSubmission.array('screensho
             instant_points_award: true,
             admin_review_required: false
         };
+        // ✅ ADD THIS VALIDATION RIGHT AFTER:
+        const maxAllowed = settings.max_screenshots_allowed || 20;
+        if (screenshots.length > maxAllowed) {
+            return res.status(400).json({
+                error: `Maximum ${maxAllowed} screenshots allowed. You uploaded ${screenshots.length}.`
+            });
+        }
 
         // Validate counts match
         if (numbers.length !== screenshots.length) {
@@ -8480,11 +8487,18 @@ router.get('/personal-share-settings', authenticateUser, async (req, res) => {
                 points_per_submission: 5,
                 instant_points_award: false,
                 admin_review_required: true,
+                max_screenshots_allowed: 20,
                 status: 'active'
             });
         }
 
-        res.json(result.rows[0]);
+        // ✅ ADD: Include max_screenshots_allowed
+        res.json({
+            points_per_submission: result.rows[0].points_per_submission,
+            instant_points_award: result.rows[0].instant_points_award,
+            admin_review_required: result.rows[0].admin_review_required,
+            max_screenshots_allowed: result.rows[0].max_screenshots_allowed || 20
+        });
     } catch (error) {
         console.error('Error fetching settings:', error);
         res.status(500).json({ error: 'Failed to fetch settings' });
@@ -8521,7 +8535,10 @@ router.get('/admin/personal-share/settings', authenticateAdmin, checkPermission(
 router.put('/admin/personal-share/settings', authenticateAdmin, checkPermission('task_personal_settings'), async (req, res) => {
     try {
         const pool = req.app.get('db');
-        const { pointsPerSubmission, instantPointsAward, adminReviewRequired } = req.body;
+        const { pointsPerSubmission, instantPointsAward, adminReviewRequired, maxScreenshotsAllowed } = req.body;
+
+        // ✅ ADD: Default value for maxScreenshotsAllowed
+        const maxScreenshots = maxScreenshotsAllowed || 20;
 
         // Ensure we get the latest settings ID
         const currentSettings = await pool.query('SELECT id FROM personal_share_settings ORDER BY id DESC LIMIT 1');
@@ -8529,19 +8546,19 @@ router.put('/admin/personal-share/settings', authenticateAdmin, checkPermission(
         if (currentSettings.rows.length === 0) {
             // Create if doesn't exist
             await pool.query(`
-                INSERT INTO personal_share_settings (points_per_submission, instant_points_award, admin_review_required, created_at, updated_at)
-                VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `, [pointsPerSubmission, instantPointsAward, adminReviewRequired]);
+                INSERT INTO personal_share_settings (points_per_submission, instant_points_award, admin_review_required, max_screenshots_allowed, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `, [pointsPerSubmission, instantPointsAward, adminReviewRequired, maxScreenshots]);
         } else {
             // Update existing
             await pool.query(`
                 UPDATE personal_share_settings 
-                SET points_per_submission = $1, instant_points_award = $2, admin_review_required = $3, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $4
-            `, [pointsPerSubmission, instantPointsAward, adminReviewRequired, currentSettings.rows[0].id]);
+                SET points_per_submission = $1, instant_points_award = $2, admin_review_required = $3, max_screenshots_allowed = $4, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $5
+            `, [pointsPerSubmission, instantPointsAward, adminReviewRequired, maxScreenshots, currentSettings.rows[0].id]);
         }
 
-        // ✅ ADD THIS: Sync to settings table
+        // Sync to settings table
         await pool.query(
             'UPDATE settings SET setting_value = $1, updated_at = NOW() WHERE setting_key = $2',
             [pointsPerSubmission.toString(), 'points_per_share']
@@ -8555,7 +8572,6 @@ router.put('/admin/personal-share/settings', authenticateAdmin, checkPermission(
         res.status(500).json({ error: 'Failed to update settings' });
     }
 });
-
 // Get Personal Share Submissions - User List
 router.get('/admin/personal-share/submissions/users', authenticateAdmin, checkPermission('task_personal_submissions'), async (req, res) => {
     try {
