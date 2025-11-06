@@ -6109,6 +6109,9 @@ router.post('/global-task/upload-proof', authenticateUser, uploadSubmission.sing
                 [pointsPerLead, assignmentId]
             );
 
+            await logPointTransaction(pool, userId, pointsPerLead, 'task', `Global task completed - instant award`, assignmentId);
+
+
             // Check if lead should return to pool
             const leadCheck = await pool.query(
                 'SELECT times_assigned FROM leads WHERE id = $1',
