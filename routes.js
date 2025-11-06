@@ -6985,33 +6985,6 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                     [points, submission.user_id]
                 );
 
-                // ✅ ADD THIS: Log admin approval
-                await logAdminApprovalActivity(pool, submission.user_id, points, submission.id, req.admin?.adminId || null);
-
-                await pool.query(
-                    'UPDATE user_lead_assignments SET points_awarded = $1 WHERE id = $2',
-                    [points, submission.assignment_id]
-                );
-                // Log transaction for earnings tracking
-                await logPointTransaction(pool, submission.user_id, points, 'task', `Task approved - Lead submission #${submission.id}`, submission.id);
-
-
-                // Auto-check milestones after task completion
-
-            }
-
-            // If points not awarded yet, award now
-            if (assignment.points_awarded === 0) {
-                const pointsRes = await pool.query(
-                    "SELECT setting_value FROM campaign_settings WHERE setting_key = 'points_per_lead'"
-                );
-                const points = parseInt(pointsRes.rows[0]?.setting_value) || 1;
-
-                await pool.query(
-                    'UPDATE users SET points = points + $1, task_earnings = task_earnings + $1 WHERE id = $2',
-                    [points, submission.user_id]
-                );
-
                 await logAdminApprovalActivity(pool, submission.user_id, points, submission.id, req.admin?.adminId || null);
 
                 await pool.query(
@@ -7029,17 +7002,15 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
 
                 // Get share count
                 const personalShares = await pool.query(`
-        SELECT COUNT(DISTINCT recipient_number) as total
-        FROM user_recipients sr
-        JOIN submissions s ON sr.submission_id = s.id
-        WHERE s.user_id = $1 AND s.status = 'active'
-    `, [submission.user_id]);
+                SELECT COUNT(DISTINCT recipient_number) as total
+                FROM user_recipients sr
+                JOIN submissions s ON sr.submission_id = s.id
+                WHERE s.user_id = $1 AND s.status = 'active'`, [submission.user_id]);
 
                 const globalTasks = await pool.query(`
-        SELECT COUNT(*) as total
-        FROM user_lead_assignments
-        WHERE user_id = $1 AND status = 'approved'
-    `, [submission.user_id]);
+                SELECT COUNT(*) as total
+                FROM user_lead_assignments
+                WHERE user_id = $1 AND status = 'approved'`, [submission.user_id]);
 
                 const shareCount = parseInt(personalShares.rows[0].total) + parseInt(globalTasks.rows[0].total);
 
@@ -7049,8 +7020,7 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
 
                 // Check milestones
                 const milestones = await pool.query(`
-        SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key
-    `);
+                 SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key`);
 
                 console.log('Milestones found:', milestones.rows.length);
 
