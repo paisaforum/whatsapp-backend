@@ -6981,7 +6981,7 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                 const points = parseInt(pointsRes.rows[0]?.setting_value) || 1;
 
                 await pool.query(
-                    'UPDATE users SET points = points + $1 WHERE id = $2',
+                    'UPDATE users SET points = points + $1, task_earnings = task_earnings + $1 WHERE id = $2',
                     [points, submission.user_id]
                 );
 
@@ -7002,47 +7002,69 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
 
 
                 // Auto-check milestones after task completion
+                // Auto-check milestones after task completion
                 try {
+                    console.log('===== MILESTONE CHECK STARTED (GLOBAL TASK) =====');
+                    console.log('User ID:', submission.user_id);
+
                     // Get share count
                     const personalShares = await pool.query(`
-                        SELECT COUNT(DISTINCT recipient_number) as total
-                        FROM user_recipients sr
-                        JOIN submissions s ON sr.submission_id = s.id
-                        WHERE s.user_id = $1 AND s.status = 'active'
-                    `, [submission.user_id]);
+        SELECT COUNT(DISTINCT recipient_number) as total
+        FROM user_recipients sr
+        JOIN submissions s ON sr.submission_id = s.id
+        WHERE s.user_id = $1 AND s.status = 'active'
+    `, [submission.user_id]);
 
                     const globalTasks = await pool.query(`
-                        SELECT COUNT(*) as total
-                        FROM user_lead_assignments
-                        WHERE user_id = $1 AND status = 'approved'
-                    `, [submission.user_id]);
+        SELECT COUNT(*) as total
+        FROM user_lead_assignments
+        WHERE user_id = $1 AND status = 'approved'
+    `, [submission.user_id]);
 
                     const shareCount = parseInt(personalShares.rows[0].total) + parseInt(globalTasks.rows[0].total);
 
+                    console.log('Personal shares:', personalShares.rows[0].total);
+                    console.log('Global tasks:', globalTasks.rows[0].total);
+                    console.log('Total shareCount:', shareCount);
+
                     // Check milestones
                     const milestones = await pool.query(`
-                        SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key
-                    `);
+        SELECT * FROM settings WHERE setting_key LIKE 'milestone_%' ORDER BY setting_key
+    `);
+
+                    console.log('Milestones found:', milestones.rows.length);
 
                     for (const m of milestones.rows) {
                         const shares = parseInt(m.setting_key.replace('milestone_', ''));
                         const bonus = parseInt(m.setting_value);
 
+                        console.log(`Checking milestone ${shares}: shareCount=${shareCount}, bonus=${bonus}`);
+
                         if (shareCount >= shares) {
+                            console.log('✅ Share count met!');
+
                             const exists = await pool.query(
                                 'SELECT * FROM user_milestones WHERE user_id = $1 AND milestone_type = $2 AND milestone_value = $3',
                                 [submission.user_id, 'shares', shares]
                             );
 
+                            console.log('Already awarded?', exists.rows.length > 0);
+
                             if (exists.rows.length === 0) {
+                                console.log('🎯 AWARDING MILESTONE NOW!');
+
                                 await pool.query(
                                     'INSERT INTO user_milestones (user_id, milestone_type, milestone_value, bonus_awarded) VALUES ($1, $2, $3, $4)',
                                     [submission.user_id, 'shares', shares, bonus]
                                 );
-                                await pool.query('UPDATE users SET points = points + $1 WHERE id = $2', [bonus, submission.user_id]);
+
+                                await pool.query(
+                                    'UPDATE users SET points = points + $1, milestone_earnings = milestone_earnings + $1 WHERE id = $2',
+                                    [bonus, submission.user_id]
+                                );
+
                                 await logPointTransaction(pool, submission.user_id, bonus, 'milestone', `Milestone reward: ${shares} shares completed`, shares);
 
-                                // ✅ ADD THIS LINE:
                                 const allMilestones = [10, 50, 100, 500, 1000, 5000, 10000];
                                 const nextMilestone = allMilestones.find(m => m > shares) || null;
                                 await logMilestoneActivity(pool, submission.user_id, shares, bonus, shareCount, nextMilestone);
@@ -7051,10 +7073,11 @@ router.put('/admin/lead-submissions/:id/review', authenticateAdmin, checkPermiss
                             }
                         }
                     }
+
+                    console.log('===== MILESTONE CHECK COMPLETED =====');
                 } catch (error) {
                     console.error('Error auto-checking milestones:', error);
                 }
-
             }
 
             // ✅ NEW: Lead Recycling Logic
